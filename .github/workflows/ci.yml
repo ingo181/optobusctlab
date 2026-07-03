@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  # Aktivieren, sobald octlab-server auf dem Pi laufen soll.
+  # Nutzt `cross` statt nativem cargo, da aarch64-unknown-linux-gnu
+  # (RocksDB-Abhängigkeit von SurrealDB eingeschlossen) auf den
+  # Standard-Runnern nicht ohne Cross-Toolchain baut.
+  #
+  # cross-build-pi:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - run: cargo install cross --git https://github.com/cross-rs/cross
+  #     - run: cross build --release --target aarch64-unknown-linux-gnu -p octlab-server
+
+  # Aktivieren, sobald apps/desktop (Tauri) existiert. Jede Plattform baut
+  # nativ auf ihrem eigenen Runner -- kein echtes Cross-Compiling für die
+  # Bundles, aber das erreichbare Äquivalent ("ein CI-Lauf, alle Installer"),
+  # weil macOS-Signierung ohnehin einen echten Mac-Runner braucht.
+  #
+  # tauri-build:
+  #   strategy:
+  #     matrix:
+  #       os: [ubuntu-latest, windows-latest, macos-latest]
+  #   runs-on: ${{ matrix.os }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: tauri-apps/tauri-action@v0

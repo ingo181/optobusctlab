@@ -1,0 +1,11 @@
+[package]
+name = "octlab-lab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+octlab-transport = { path = "../octlab-transport" }
+octlab-protocol = { path = "../octlab-protocol" }
+tokio.workspace = true
+tracing.workspace = true

@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/octlab-transport",
+    "crates/octlab-protocol",
+    "crates/octlab-devices",
+    "crates/octlab-lab",
+    "crates/octlab-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] }
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+async-trait = "0.1"

@@ -1,0 +1,18 @@
+[package]
+name = "octlab-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+octlab-lab = { path = "../octlab-lab" }
+octlab-protocol = { path = "../octlab-protocol" }
+octlab-transport = { path = "../octlab-transport" }
+octlab-devices = { path = "../octlab-devices" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = "0.3"
+axum = { version = "0.7", features = ["ws"] }
+serde.workspace = true
+serde_json = "1"
+futures-util = "0.3"
