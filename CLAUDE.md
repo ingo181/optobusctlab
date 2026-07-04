@@ -123,13 +123,11 @@ bewusst nur in den Cucumber-Features modelliert, nicht im ESDM-Modell - es
 ist keine Aggregat-Tatsache, sondern eine technische Eigenschaft der
 Lab-Actor-API (dort gibt es auf Aggregat-Ebene ohnehin keinen Query-Command).
 
-**Status Cucumber-Tests:** `cargo test -p octlab-lab --test cucumber` baut
-aktuell NICHT. `cucumber` 0.21 erwartet `#[derive(cucumber::World)]` statt
-eines von Hand geschriebenen `impl World for LabWorld` - dem fehlt u.a.
-`new()`, wodurch auch `WorldInventory` und in der Folge alle
-`#[given]`/`#[when]`/`#[then]`-Makros fehlschlagen (20 Compiler-Fehler,
-alle auf dieselbe Ursache zurückführbar). Kein struktureller Bruch, aber
-noch zu beheben, bevor diese Tests in CI laufen können.
+**Status Cucumber-Tests:** grün (`cargo test -p octlab-lab --test cucumber`,
+2 Features, 3 Szenarien, 11 Steps). `cucumber` 0.21 verlangt
+`#[derive(cucumber::World)]` statt eines von Hand geschriebenen
+`impl World for LabWorld` (das ältere `#[derive(WorldInit)]`-Muster wurde
+in 0.21 ersetzt) - der `LabWorld`-Struct trägt das Derive jetzt.
 
 ## Build & Test
 
@@ -146,6 +144,25 @@ Cross-Compile-Ziele (noch nicht in CI eingerichtet):
   (`windows-latest`, `macos-latest`, `ubuntu-latest`) – siehe
   `.github/workflows/ci.yml`, sobald angelegt. macOS-Signierung braucht einen
   echten Mac-Runner, nicht cross-compilebar von Linux aus.
+
+## Was gehört NICHT ins Repo
+
+Das Repo ist public und MIT-lizenziert – Drittmaterial mit unklarer oder
+inkompatibler Lizenz darf nicht rein, auch nicht versehentlich über einen
+Commit, der "eigentlich" etwas anderes bringen sollte.
+
+- **`esdm`-CLI-Binary** (liegt lokal im Repo-Root, `/esdm` in `.gitignore`).
+  Lizenz laut Schema-Header ("Free to use and redistribute as-is.
+  Modification is not permitted") ist NICHT MIT-kompatibel. War schon einmal
+  versehentlich mitcommittet (`d325681`), rückwirkend bereinigt (`be37e16`,
+  vor dem Push). Die `*.esdm.yaml`-Modelldateien und `schemas/` sind davon
+  NICHT betroffen – die gehören sehr wohl ins Repo.
+- **IDE-/Editor-Config** (`.idea/`, `.vscode/`, beide in `.gitignore`). Rein
+  lokale Werkzeug-Config, keine Projektinformation. War ebenfalls schon
+  einmal versehentlich getrackt (Initial-Commit), bereinigt in `6723c22`.
+- **Referenzmaterial mit unklarer Lizenz**: c't-PDFs/Heise-Copyright-Material
+  (z.B. "Flashen der c't-Lab-Firmware.pdf"), JLab-Doku/JARs, `ctlab.py`.
+  Bleibt lokale Referenz auf der eigenen Maschine, NIE committen.
 
 ## Nächste Schritte (Reihenfolge, nicht alles auf einmal)
 
