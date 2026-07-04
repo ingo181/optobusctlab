@@ -137,11 +137,7 @@ impl Lab {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(key, tx);
 
-        if self
-            .outgoing
-            .send(Command::Query(key).to_wire())
-            .is_err()
-        {
+        if self.outgoing.send(Command::Query(key).to_wire()).is_err() {
             self.pending.lock().unwrap().remove(&key);
             return None;
         }

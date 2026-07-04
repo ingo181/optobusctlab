@@ -159,8 +159,7 @@ mod tests {
     #[test]
     fn parses_idn_reply() {
         // Beispiel: ADA-IO-Identifikationsantwort auf "0:IDN?"
-        let msg =
-            parse_message("#0:254=1.28 [ADA by CM/c't 04/2007; Modules: IO]").unwrap();
+        let msg = parse_message("#0:254=1.28 [ADA by CM/c't 04/2007; Modules: IO]").unwrap();
         assert_eq!(msg.value, 1.28);
         assert_eq!(
             msg.status_text.as_deref(),
