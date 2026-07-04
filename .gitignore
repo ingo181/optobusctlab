@@ -1,6 +1,8 @@
 /target
 **/*.rs.bk
 .DS_Store
+.idea/
+.vscode/
 
 # ESDM-CLI-Binary (lokales Tool, kein Repo-Inhalt) - NICHT die Modelldateien.
 # Führender Slash bindet das an den Repo-Root, damit weder Unterverzeichnisse
