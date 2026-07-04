@@ -17,6 +17,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  # Deterministische Code-Gates: einmal auf ubuntu-latest reicht, das sind
+  # reine Text-/Lint-Checks ohne Plattformabhängigkeit.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Lizenz-Gate (siehe deny.toml): blockt PRs, die eine nicht auf der
+  # Allowlist stehende Dependency-Lizenz einschleppen.
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
   # Aktivieren, sobald octlab-server auf dem Pi laufen soll.
   # Nutzt `cross` statt nativem cargo, da aarch64-unknown-linux-gnu
   # (RocksDB-Abhängigkeit von SurrealDB eingeschlossen) auf den
