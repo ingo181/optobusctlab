@@ -19,7 +19,6 @@ use cucumber::{given, then, when, World};
 use octlab_lab::Lab;
 use octlab_protocol::{ChannelKey, ModuleAddress, SubChannel};
 use octlab_transport::SimulatedConnection;
-use tokio::sync::broadcast;
 
 // cucumber 0.21 ersetzt das ältere `#[derive(WorldInit)]` + handgeschriebenes
 // `impl World` durch `#[derive(World)]`, das `impl World` (Konstruktion via
@@ -30,7 +29,6 @@ struct LabWorld {
     /// `Some` bis `ensure_spawned()` sie in den Actor überführt.
     connection: Option<SimulatedConnection>,
     lab: Option<Lab>,
-    subscription: Option<broadcast::Receiver<octlab_protocol::Message>>,
     last_query_result: Option<Option<f64>>,
     last_broadcast_value: Option<f64>,
 }
@@ -49,7 +47,6 @@ impl Default for LabWorld {
         Self {
             connection: Some(SimulatedConnection::new("cucumber-sim")),
             lab: None,
-            subscription: None,
             last_query_result: None,
             last_broadcast_value: None,
         }
