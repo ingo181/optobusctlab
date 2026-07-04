@@ -1,0 +1,34 @@
+apiVersion: schema.esdm.io/core/v1
+kind: bounded-context
+name: module-control
+scope:
+  domain: optobusctlab
+description: >-
+  Ansteuerung und Beobachtung einzelner c't-Lab-Module über den OptoBus:
+  Discovery, Lesen/Schreiben von Subkanal-Werten, Status- und
+  Identifikationsmeldungen. Messreihen-Aufzeichnung (Sweep/Recording) und
+  ein Verbindungsstatus-Read-Model sind als künftige Erweiterungen
+  desselben Bounded Context vorgesehen, aber noch nicht modelliert.
+ubiquitousLanguage:
+  - term: module
+    definition: >-
+      Ein einzelnes c't-Lab-Baukastenmodul (z.B. DDS-Funktionsgenerator,
+      Digitalvoltmeter, Netzteil), identifiziert durch seine feste
+      Moduladresse (0-7, per Jumper eingestellt) am OptoBus.
+  - term: subchannel
+    definition: >-
+      Ein adressierbarer Wert innerhalb eines Moduls (Messwert, Parameter,
+      Statuskanal). Zusammen mit der Moduladresse eindeutiger Schlüssel für
+      einen Wert im gesamten System.
+  - term: discovery
+    definition: >-
+      Der Moment, in dem sich ein Modul erstmals über eine
+      Identifikationsantwort (IDN) am OptoBus meldet. Vor der Discovery
+      existiert für eine Adresse kein Module-Aggregat.
+    avoid:
+      - term: connection
+        reason: >-
+          "Verbindung" bezieht sich im Code auf die Transport-Ebene
+          (BoardConnection) und den Bus als Ganzes. Discovery ist ein
+          fachlicher Vorgang auf Modul-Ebene, unabhängig davon, ob der Bus
+          insgesamt verbunden ist.

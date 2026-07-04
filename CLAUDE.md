@@ -7,6 +7,39 @@ kürzer). Falls das Projekt wachsen sollte, ist eine spätere Umbenennung auf
 den vollen `optobusctlab-*`-Präfix ein reines Suchen/Ersetzen, kein
 strukturelles Problem.
 
+## Workflow für (nahezu) autonome Sessions: Spec- und Test-Driven
+
+Jede Aufgabe läuft nach diesem Zyklus – Ziel ist, dass eine Claude-Code-Session
+in RustRover mehrere Schritte selbständig durchläuft, ohne nach jedem
+Zwischenschritt auf Bestätigung zu warten. Spec und Tests sind das
+Sicherheitsnetz, das diese Autonomie erst verantwortbar macht.
+
+1. **Spec zuerst.** Für jede neue Fähigkeit (neues Modul, neuer Endpoint, neue
+   Transport-Implementierung) liegt eine Datei unter `specs/NNNN-kurzer-name.md`
+   (fortlaufend nummeriert, Vorlage: `specs/TEMPLATE.md`). Eine Spec beschreibt
+   WAS und WARUM, nicht WIE – keine Rust-Typen, keine Implementierungsdetails.
+   Akzeptanzkriterien im Given/When/Then-Format.
+2. **Tests aus der Spec ableiten.** Jedes Akzeptanzkriterium → mindestens ein
+   Test. Test schreiben, `cargo test` laufen lassen, ROT bestätigen (explizit
+   sehen, dass er fehlschlägt – ein Test, der nie rot war, hat nichts bewiesen).
+3. **Minimal implementieren, bis GRÜN.** Nur so viel Code wie nötig für den
+   aktuellen Test. Kein Vorgriff auf spätere Specs.
+4. **Refactoring**, Tests bleiben grün (`cargo test` nach jedem Schritt).
+5. **Definition of Done** für eine Spec:
+   - Alle Akzeptanzkriterien haben einen grünen Test
+   - `cargo test --workspace` komplett grün
+   - `cargo clippy --workspace -- -D warnings` ohne Fehler
+   - Spec-Datei-Status auf `Umgesetzt` gesetzt
+   - `CLAUDE.md` aktualisiert, falls sich eine dokumentierte Design-Entscheidung
+     geändert hat
+6. **Nicht spekulativ vorbauen** (YAGNI) – kein Code für Specs, die noch nicht
+   geschrieben sind, auch nicht "weil's sich anbietet".
+
+Rückfragen an den Menschen sind trotzdem Pflicht, wenn:
+- eine Spec mehrdeutig ist (lieber fragen als raten)
+- eine Design-Entscheidung aus diesem Dokument verletzt werden müsste
+- eine neue externe Dependency nötig wird, die noch nicht im Workspace ist
+
 ## Worum es geht
 
 Steuer-/Mess-UI für Carsten Meyers c't-Lab (Baukasten-Messsystem, c't-Artikelserie
@@ -49,6 +82,54 @@ dem Muster in `octlab-devices/src/lib.rs` (siehe `Dds`-Struct).
   bewusst vermieden).
 - **DTOs für serde bleiben in `octlab-server`**, nicht in `octlab-protocol` –
   Protokoll-Ebene soll nicht von serde abhängen (Layer-Trennung).
+
+## Spezifikation: ESDM + Cucumber (Harness/Spec-Trennung)
+
+Zwei Spezifikationsebenen, bewusst getrennt, kein Duplikat:
+
+```
+domain.esdm.yaml                      # WAS: Domain-Modell als ESDM-YAML (nicht
+module-control/                       # ausführbar, nur gegen schemas/ gelintet:
+  bounded-context.esdm.yaml           # `esdm lint`).
+  module.esdm.yaml                    #   Aggregate `module` + seine Commands/Events.
+  module.feature.esdm.yaml            #   Given-When-Then-Spezifikation des
+                                       #   Aggregats (ESDM-GWT-Extension) - ebenfalls
+                                       #   nur gelintet, nicht ausgeführt.
+  actors.esdm.yaml                    #   Actors operator (human) / bus-receiver (system).
+
+crates/octlab-lab/tests/
+  features/*.feature                  # Given-When-Then-Specs (Gherkin), lesbar auch
+                                       # ohne Rust-Kenntnisse, laufen als echte
+                                       # `cargo test` gegen den Lab-Actor.
+  cucumber.rs                         # Step-Definitionen dazu.
+```
+
+Aktueller Modellstand: Domain `optobusctlab` → Bounded Context
+`module-control`, Aggregate `module` (identifiziert über `address`),
+Commands `record-identification`/`record-status`/`record-channel-value`/
+`set-channel-value`, Events `identified`/`status-received`/
+`channel-value-received`/`channel-value-set-requested`. Ein Read-Model für
+Verbindungsstatus/verbundene Module und ein Process-Manager für Sweep-/
+Recording-Workflows sind im Modell bewusst noch NICHT angelegt (siehe
+"Nächste Schritte" unten) - erst modellieren, wenn sie fachlich dran sind.
+
+Verhältnis ESDM-GWT ↔ Gherkin/Cucumber: unterschiedliche Flughöhe. ESDM-GWT
+(`module.feature.esdm.yaml`) beschreibt den Aggregat-Vertrag in reinen
+Domänenbegriffen (Commands/Events, kein Draht-Format, kein Timeout) und wird
+nur gelintet. Die Cucumber-Features testen die tatsächliche
+`octlab-lab`-Implementierung (Draht-Strings, Lab-Actor, Timeout-Verhalten,
+Broadcast) und laufen als echter Code. Das 500ms-Query-Timeout ist deshalb
+bewusst nur in den Cucumber-Features modelliert, nicht im ESDM-Modell - es
+ist keine Aggregat-Tatsache, sondern eine technische Eigenschaft der
+Lab-Actor-API (dort gibt es auf Aggregat-Ebene ohnehin keinen Query-Command).
+
+**Status Cucumber-Tests:** `cargo test -p octlab-lab --test cucumber` baut
+aktuell NICHT. `cucumber` 0.21 erwartet `#[derive(cucumber::World)]` statt
+eines von Hand geschriebenen `impl World for LabWorld` - dem fehlt u.a.
+`new()`, wodurch auch `WorldInventory` und in der Folge alle
+`#[given]`/`#[when]`/`#[then]`-Makros fehlschlagen (20 Compiler-Fehler,
+alle auf dieselbe Ursache zurückführbar). Kein struktureller Bruch, aber
+noch zu beheben, bevor diese Tests in CI laufen können.
 
 ## Build & Test
 

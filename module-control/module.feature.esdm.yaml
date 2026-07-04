@@ -1,0 +1,137 @@
+apiVersion: schema.esdm.io/given-when-then/v1
+kind: feature
+name: module-discovery-and-recording
+description: >-
+  Verhaltensspezifikation des module-Aggregats: Discovery über die erste
+  Identifikationsantwort, das Erfassen von Status- und Kanalwerten auf
+  einem bereits entdeckten Modul, sowie die requires-discovery-Invariante,
+  die record-status/record-channel-value/set-channel-value vor der
+  Discovery ablehnt.
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+scenarios:
+  - name: erste-identifikationsantwort-entdeckt-das-modul
+    description: >-
+      record-identification ist der einzige Command, der ein neues
+      Module-Aggregat erzeugen darf.
+    given: []
+    when:
+      command: record-identification
+      data:
+        identification: "ADA by CM/c't 04/2007; Modules: IO"
+    then:
+      events:
+        - event: identified
+          data:
+            identification: "ADA by CM/c't 04/2007; Modules: IO"
+
+  - name: erneute-identifikationsantwort-aktualisiert-die-identifikation
+    description: >-
+      Ein erneuter IDN-Poll auf einem bereits entdeckten Modul emittiert
+      wieder identified, nicht ein separates "Discovery"-Event.
+    given:
+      - event: identified
+        data:
+          identification: "ADA by CM/c't 04/2007; Modules: IO"
+    when:
+      command: record-identification
+      data:
+        identification: "ADA by CM/c't 04/2007; Modules: IO, rev. 2"
+    then:
+      events:
+        - event: identified
+          data:
+            identification: "ADA by CM/c't 04/2007; Modules: IO, rev. 2"
+
+  - name: statusmeldung-auf-entdecktem-modul-wird-erfasst
+    given:
+      - event: identified
+        data:
+          identification: "ADA by CM/c't 04/2007; Modules: IO"
+    when:
+      command: record-status
+      data:
+        code: 0
+        text: "OK"
+    then:
+      events:
+        - event: status-received
+          data:
+            code: 0
+            text: "OK"
+
+  - name: statusmeldung-vor-discovery-wird-abgelehnt
+    given: []
+    when:
+      command: record-status
+      data:
+        code: 6
+        text: "LOCKED"
+    then:
+      rejection:
+        invariant: requires-discovery
+
+  - name: kanalwert-auf-entdecktem-modul-wird-erfasst
+    description: >-
+      Deckt sowohl Query-Antworten als auch unaufgefordert gesendete Werte
+      ab (z.B. Panel-Bedienung, Trigger) - beide kommen über denselben
+      record-channel-value-Command an, die Unterscheidung ist auf
+      Aggregat-Ebene nicht sichtbar.
+    given:
+      - event: identified
+        data:
+          identification: "ADA by CM/c't 04/2007; Modules: IO"
+    when:
+      command: record-channel-value
+      data:
+        subchannel: 0
+        value: 1.23456
+    then:
+      events:
+        - event: channel-value-received
+          data:
+            subchannel: 0
+            value: 1.23456
+
+  - name: kanalwert-vor-discovery-wird-abgelehnt
+    given: []
+    when:
+      command: record-channel-value
+      data:
+        subchannel: 0
+        value: 1.23456
+    then:
+      rejection:
+        invariant: requires-discovery
+
+  - name: operator-setzt-kanalwert-auf-entdecktem-modul
+    given:
+      - event: identified
+        data:
+          identification: "DDS-Funktionsgenerator"
+    when:
+      command: set-channel-value
+      data:
+        subchannel: 0
+        value: 1000.0
+      actor: operator
+    then:
+      events:
+        - event: channel-value-set-requested
+          data:
+            subchannel: 0
+            value: 1000.0
+
+  - name: operator-kann-keinen-kanalwert-vor-discovery-setzen
+    given: []
+    when:
+      command: set-channel-value
+      data:
+        subchannel: 0
+        value: 1000.0
+      actor: operator
+    then:
+      rejection:
+        invariant: requires-discovery

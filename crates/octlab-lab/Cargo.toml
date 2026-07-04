@@ -9,3 +9,10 @@ octlab-transport = { path = "../octlab-transport" }
 octlab-protocol = { path = "../octlab-protocol" }
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+cucumber = "0.21"
+
+[[test]]
+name = "cucumber"
+harness = false

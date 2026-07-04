@@ -1,0 +1,243 @@
+apiVersion: schema.esdm.io/core/v1
+kind: aggregate
+name: module
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+description: >-
+  Ein einzelnes, am OptoBus entdecktes c't-Lab-Modul. Entsteht als
+  Aggregat erst durch das erste identified-Event für seine Adresse
+  (Discovery); vorher existiert für diese Adresse kein Aggregat-Zustand.
+identifiedBy:
+  source: state
+  field: address
+state:
+  type: object
+  properties:
+    address:
+      type: integer
+      minimum: 0
+      maximum: 7
+    identification:
+      type: string
+    channelValues:
+      type: object
+      additionalProperties:
+        type: number
+    lastStatus:
+      type: object
+      properties:
+        code:
+          type: number
+        text:
+          type: string
+      required: [code]
+  required: [address]
+invariants:
+  - name: requires-discovery
+    rule: >-
+      record-status, record-channel-value und set-channel-value dürfen nur
+      auf einem bereits entdeckten Modul ausgeführt werden, d.h. für die
+      betroffene Adresse muss zuvor mindestens ein identified-Event
+      aufgetreten sein. record-identification ist der einzige Command, der
+      ein neues Module-Aggregat erzeugen darf (Discovery).
+  # Bewusst noch NICHT modelliert: "Subkanal 255 ist laut c't-Artikel für
+  # Statusmeldungen reserviert, set-channel-value sollte dort abgelehnt
+  # werden." Zurückgestellt, bis relevant (siehe Interview).
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: command
+name: record-identification
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+description: >-
+  Erfasst die Identifikationsantwort (IDN) eines Moduls, wie bus-receiver
+  sie aus einer vom OptoBus empfangenen Zeile geparst hat. Der einzige
+  Command, der ein neues Module-Aggregat erzeugen darf (Discovery).
+data:
+  type: object
+  properties:
+    identification:
+      type: string
+  required: [identification]
+publishes:
+  - identified
+actors:
+  - bus-receiver
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: command
+name: record-status
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+description: >-
+  Erfasst eine Statusmeldung eines bereits entdeckten Moduls (z.B.
+  Quittung eines Schreibversuchs, Fehlercode), wie bus-receiver sie aus dem
+  Statuskanal (Subkanal 255) einer empfangenen Zeile geparst hat.
+data:
+  type: object
+  properties:
+    code:
+      type: number
+    text:
+      type: string
+  required: [code]
+publishes:
+  - status-received
+actors:
+  - bus-receiver
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: command
+name: record-channel-value
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+description: >-
+  Erfasst einen Mess- oder Parameterwert eines bereits entdeckten Moduls,
+  wie bus-receiver ihn aus einer empfangenen Zeile geparst hat – egal ob
+  als Antwort auf eine Query oder unaufgefordert gesendet (z.B.
+  Panel-Bedienung, Trigger).
+data:
+  type: object
+  properties:
+    subchannel:
+      type: integer
+      minimum: 0
+      maximum: 255
+    value:
+      type: number
+  required: [subchannel, value]
+publishes:
+  - channel-value-received
+actors:
+  - bus-receiver
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: command
+name: set-channel-value
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+description: >-
+  Löst das Setzen eines Subkanal-Werts auf einem bereits entdeckten Modul
+  aus (z.B. Frequenz, Pegel, Ausgangsspannung). Generisch auf
+  Adresse+Subkanal+Wert-Ebene – Gerätetyp-Semantik (z.B. "Frequenz setzen")
+  bleibt Sache der Geräteebene im Code, nicht des Domain-Modells.
+data:
+  type: object
+  properties:
+    subchannel:
+      type: integer
+      minimum: 0
+      maximum: 255
+    value:
+      type: number
+  required: [subchannel, value]
+publishes:
+  - channel-value-set-requested
+actors:
+  - operator
+
+# Die folgenden vier Events lösen alle die Linter-Warnung
+# esdm/modeling/event-without-consumer aus: aktuell existiert kein
+# read-model, keine policy und kein process-manager, der sie konsumiert.
+# Bewusst offen gelassen – Read-Model (Verbindungsstatus/verbundene
+# Module) und Process-Manager (Sweep/Recording) wurden im Modellierungs-
+# Interview für module-control explizit auf später vertagt, sind hier
+# also kein vergessener Fix, sondern eine dokumentierte Entscheidung.
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: event
+name: identified
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+description: >-
+  Ein Modul hat sich über eine Identifikationsantwort (IDN) am OptoBus
+  gemeldet. Das erste Auftreten dieses Events für eine Adresse ist die
+  Discovery des Module-Aggregats; spätere Auftreten aktualisieren die
+  Identifikation (z.B. bei erneutem IDN-Poll).
+data:
+  type: object
+  properties:
+    identification:
+      type: string
+  required: [identification]
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: event
+name: status-received
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+description: >-
+  Ein bereits entdecktes Modul hat eine Statusmeldung gesendet (Subkanal
+  255), z.B. Quittung eines Schreibversuchs oder Fehlercode.
+data:
+  type: object
+  properties:
+    code:
+      type: number
+    text:
+      type: string
+  required: [code]
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: event
+name: channel-value-received
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+description: >-
+  Ein bereits entdecktes Modul hat einen Mess- oder Parameterwert auf
+  einem Subkanal gemeldet – als Antwort auf eine Query oder unaufgefordert.
+data:
+  type: object
+  properties:
+    subchannel:
+      type: integer
+      minimum: 0
+      maximum: 255
+    value:
+      type: number
+  required: [subchannel, value]
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: event
+name: channel-value-set-requested
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+  aggregate: module
+description: >-
+  Ein Operator hat das Setzen eines Subkanal-Werts auf einem entdeckten
+  Modul veranlasst. Erfasst die Absicht, nicht die Bestätigung durch das
+  Modul (die kommt ggf. separat über status-received).
+data:
+  type: object
+  properties:
+    subchannel:
+      type: integer
+      minimum: 0
+      maximum: 255
+    value:
+      type: number
+  required: [subchannel, value]

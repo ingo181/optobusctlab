@@ -1,0 +1,7 @@
+apiVersion: schema.esdm.io/core/v1
+kind: domain
+name: optobusctlab
+description: >-
+  Steuer- und Mess-Domäne für ein c't-Lab-Baukastensystem (Netzteil-,
+  Funktionsgenerator-, Digitalvoltmeter- und I/O-Module), angesprochen über
+  den seriellen OptoBus.

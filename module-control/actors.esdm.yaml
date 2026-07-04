@@ -1,0 +1,29 @@
+apiVersion: schema.esdm.io/core/v1
+kind: actor
+name: operator
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+description: >-
+  Bedient die c't-Lab-Steuer-UI (Kiosk-Touch oder Desktop) und löst darüber
+  Schreib-Commands auf Modulen aus.
+type: human
+responsibilities:
+  - Löst set-channel-value aus, um Modulparameter zu setzen (z.B. Frequenz, Pegel, Ausgangsspannung eines Netzteils).
+
+---
+apiVersion: schema.esdm.io/core/v1
+kind: actor
+name: bus-receiver
+scope:
+  domain: optobusctlab
+  boundedContext: module-control
+description: >-
+  Repräsentiert die Actor-Task aus octlab-lab, die den OptoBus exklusiv
+  besitzt und empfangene, bereits geparste Bus-Zeilen in Commands
+  übersetzt.
+type: system
+responsibilities:
+  - Übersetzt eine geparste IDN-Antwort in record-identification.
+  - Übersetzt eine geparste Statusmeldung (Subkanal 255) in record-status.
+  - Übersetzt einen geparsten Mess- oder Parameterwert in record-channel-value.

@@ -1,0 +1,27 @@
+[licenses]
+version = 2
+# Nur diese Lizenzen sind erlaubt (MIT-kompatibel, permissiv):
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    # Permissive Attribution-only-Lizenz, gleiche Familie wie Unicode-DFS-2016
+    # oben. Betrifft nur die generierte Unicode-Datentabelle in unicode-ident
+    # (Cargo.toml-Lizenz "(MIT OR Apache-2.0) AND Unicode-3.0"); MIT-kompatibel.
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+# ISC, Unicode-DFS-2016 und Zlib werden aktuell von keiner Dependency genutzt -
+# bewusst trotzdem gelistet (Vorrat für künftige Dependencies), kein Fehler.
+# "allow" unterdrückt die sonst hier auflaufende license-not-encountered-
+# Warnung dafür, ohne die Allowlist-Einträge selbst anzufassen.
+unused-allowed-license = "allow"
+
+[bans]
+# optional: warnt bei mehrfachen Versionen derselben Crate
+multiple-versions = "warn"
