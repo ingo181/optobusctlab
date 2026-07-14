@@ -50,6 +50,18 @@ cargo run -p octlab-server     # startet auf :3000, läuft ohne Hardware
 curl localhost:3000/health
 ```
 
+## Dev Container
+
+`.devcontainer/` (Podman, nicht Docker) enthält den kompletten Rust-Toolchain
+mit `cargo-deny` und `esdm`-CLI für den Backend-Kern (die fünf `crates/`).
+Details, Build-/Run-Kommandos und bekannte Podman-Netzwerk-Stolpersteine
+stehen in [`CLAUDE.md`](./CLAUDE.md#dev-container-podman).
+
+**Tauri läuft bewusst NICHT im Dev-Container.** Das Desktop-Bundle (`apps/desktop`,
+sobald angelegt) braucht `webkit2gtk`/native GUI-Libs und wird nativ auf dem
+jeweiligen Host-OS gebaut (Windows/macOS/Linux je eigener CI-Runner) – der
+Dev-Container bleibt schlank und bezieht sich nur auf den Backend-Kern.
+
 ## Lizenz
 
 [MIT](./LICENSE). Basiert auf öffentlich dokumentiertem Protokoll-Wissen aus

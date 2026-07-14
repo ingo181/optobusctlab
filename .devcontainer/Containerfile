@@ -1,0 +1,26 @@
+FROM docker.io/library/rust:1.85-bookworm
+
+RUN rustup component add clippy rustfmt
+
+# Version gepinnt: cargo-deny >=0.19 verlangt rustc >=1.88, das Basisimage
+# bringt aber rustc 1.85 mit (siehe FROM oben). 0.18.3 ist die letzte
+# Version, die noch mit rustc 1.85 baut.
+RUN cargo install cargo-deny --version 0.18.3 --locked
+
+# esdm-CLI: frischer Download mit SHA256-Verifikation gegen die auf
+# https://www.esdm.io/getting-started/installing-esdm/ veröffentlichte
+# Prüfsumme (nur die jeweils aktuelle Version wird dort mit Checksum
+# gelistet, siehe CLAUDE.md "Dev Container").
+ARG ESDM_VERSION=0.14.0
+ARG ESDM_SHA256=c0a786972300f6f7e71e645f009b8e7b8b7967c8837daf9e51f968e756e1716e
+RUN curl -fsSL -o /usr/local/bin/esdm \
+        "https://esdm.s3.fr-par.scw.cloud/${ESDM_VERSION}/esdm-linux-amd64" \
+    && echo "${ESDM_SHA256}  /usr/local/bin/esdm" | sha256sum -c - \
+    && chmod +x /usr/local/bin/esdm
+
+# Separates target/-Verzeichnis, damit Container- und Host-Builds sich nicht
+# denselben Cargo-Cache teilen (siehe CLAUDE.md "Dev Container").
+ENV CARGO_TARGET_DIR=/cargo-target
+RUN mkdir -p /cargo-target
+
+WORKDIR /workspace

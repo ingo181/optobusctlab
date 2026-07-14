@@ -1,0 +1,26 @@
+{
+  "name": "optobusctlab-dev",
+  "build": {
+    "context": "..",
+    "dockerfile": "Containerfile"
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "mounts": [
+    "source=optobusctlab-cargo-target,target=/cargo-target,type=volume"
+  ],
+  "containerEnv": {
+    "CARGO_TARGET_DIR": "/cargo-target"
+  },
+  "forwardPorts": [3000],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "stevejpurves.cucumber"
+      ]
+    }
+  },
+  "postCreateCommand": "cargo fetch"
+}

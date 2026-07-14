@@ -129,6 +129,121 @@ Lab-Actor-API (dort gibt es auf Aggregat-Ebene ohnehin keinen Query-Command).
 `impl World for LabWorld` (das ältere `#[derive(WorldInit)]`-Muster wurde
 in 0.21 ersetzt) - der `LabWorld`-Struct trägt das Derive jetzt.
 
+## Verifizierte Hardware-Fakten (realer Aufbau, kein Annahme aus 2007er-PDFs)
+
+Am realen c't-Lab-Aufbau gemessen; bei Widerspruch zur Doku aus den
+Original-Artikeln gilt das hier.
+
+- **XPort** erreichbar unter `192.168.1.104:10001`, rohes TCP, "Accept
+  Incoming: Yes" (Voraussetzung für `TcpConnection`, siehe "Nächste Schritte").
+- **Serielle Einstellung am XPort: 38400/8/None/1** – musste von einem
+  falschen Default (9600) korrigiert werden.
+- **Vier Module per `*:IDN?` verifiziert:**
+  - Adresse 0: ADA-IO, FW 1.742, bestückt mit DA12/AD16/IO32/LCD
+  - Adresse 1: DIV, FW 3.10
+  - Adresse 2: DCG, FW 2.92
+  - Adresse 4: DDS, FW 3.71
+  - Adresse 3: unbelegt – die Discovery-Semantik im ESDM-Modell (ein Modul
+    antwortet oder eben nicht) bildet das ab, kein Sonderfall nötig.
+- **Beispielantwort** auf `1:VAL 0?`: `#1:0=0.0022024` (DIV, offene Klemmen).
+- **Echo-Verhalten:** Die gesendete Zeile wird vom XPort/den Modulen in der
+  Empfangsausgabe zurückgespiegelt (z.B. erscheint `*:IDN?` selbst wieder im
+  Empfangsstream). `parse_message()` verwirft das bereits korrekt (kein
+  `#`-Präfix) – das ist aber ein bewusstes Szenario und sollte auch als
+  solches spezifiziert werden (eigenes Cucumber-Szenario "Echo wird
+  ignoriert"), nicht nur implizit vom Parser-Verhalten abhängen.
+
+## Dev Container (Podman)
+
+Runtime ist **Podman**, nicht Docker (Linux nativ + Windows/WSL rootless).
+Dateien unter `.devcontainer/` (`Containerfile`, `devcontainer.json`).
+
+```bash
+podman build -t optobusctlab-dev -f .devcontainer/Containerfile .
+podman run --rm -it \
+  -v "$(pwd)":/workspace -w /workspace \
+  -v optobusctlab-cargo-target:/cargo-target \
+  optobusctlab-dev bash
+# im Container:
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo deny check licenses
+esdm lint domain.esdm.yaml
+```
+
+- **Ein Quellbaum, aber getrennte `target/`-Verzeichnisse:** Der Projektordner
+  wird per Bind-Mount nach `/workspace` gemountet (`workspaceMount` in
+  `devcontainer.json`, bzw. `-v "$(pwd)":/workspace` beim manuellen
+  `podman run`) – Container (Tests, Server, esdm, cargo-deny) und Host
+  (Tauri nativ mit GUI) arbeiten also auf denselben Dateien, kein Duplikat,
+  kein Sync. Der Cargo-Build-Cache wird davon aber bewusst ausgenommen: Im
+  Container ist `CARGO_TARGET_DIR=/cargo-target` gesetzt (`ENV` im
+  Containerfile), gestützt durch ein eigenes Podman-Volume
+  (`optobusctlab-cargo-target`, in `devcontainer.json` unter `mounts`, bzw.
+  `-v optobusctlab-cargo-target:/cargo-target` beim manuellen Aufruf). Würde
+  man stattdessen `/workspace/target` von Container und Host teilen, würde
+  ein Cargo-Build im jeweils anderen Kontext (andere `rustc`-Version, andere
+  Host-Triple) den kompletten Cache invalidieren – ständige Full-Rebuilds auf
+  beiden Seiten. Zusätzlich hätte ein Bind-Mount für `target/` bei rootless
+  Podman UID-Mapping-Probleme zur Folge (im Container erzeugte Dateien
+  gehören auf dem Host einem anderen User); ein von Podman verwaltetes
+  named volume vermeidet das, weil Podman die Ownership beim Anlegen selbst
+  passend setzt. Verifiziert: Eine im Container geänderte Datei ist sofort
+  auf dem Host sichtbar (Bind-Mount); ein `cargo build` im Container legt
+  ausschließlich unter `/cargo-target` (= das Volume) ab und lässt ein
+  vorhandenes Host-`target/` unangetastet, ein anschließender Host-Build
+  kompiliert dort weiter inkrementell statt komplett neu; nach einem
+  Container-Build gehören alle Dateien unter `/workspace` auf dem Host
+  weiterhin dem ursprünglichen User (keine Permission-Probleme), weil unter
+  `target/` nichts mehr in den Bind-Mount geschrieben wird.
+- **Normales rootless Networking reicht, kein `--network=host` nötig.**
+  `devcontainer.json` setzt bewusst kein `runArgs: ["--network=host"]` –
+  der Container läuft mit Podman 6s rootless-Default (`pasta`), Port 3000
+  ist über `forwardPorts` deklariert, und die LAN-Erreichbarkeit des XPort
+  (`192.168.1.104:10001`) ergibt sich automatisch aus `pasta`s NAT/Routing
+  (kein Host-Routing-Trick nötig). Verifiziert über die echte
+  `@devcontainers/cli` (nicht nur manuelles `podman run`): `NetworkMode`
+  des gestarteten Containers ist `pasta`, `*:IDN?` liefert alle vier Module
+  (Adressen 0/1/2/4, siehe "Verifizierte Hardware-Fakten" oben), und
+  `cargo test --workspace` läuft grün darin.
+- **Troubleshooting: `invalid default_rootless_network_cmd option
+  "slirp4netns"` beim Container-Start.** Kommt auf Podman-≥6-Systemen vor,
+  wenn `~/.config/containers/containers.conf` noch einen Eintrag
+  `default_rootless_network_cmd = "slirp4netns"` aus Podman-5-Zeiten hat –
+  Podman 6 akzeptiert dort laut `man containers.conf` nur noch `"pasta"`
+  (der ohnehin neue Default). Kein Repo-Problem, kein Grund für
+  `--network=host` als Workaround: einfach die veraltete Zeile aus
+  `containers.conf` entfernen (oder auf `"pasta"` ändern) und `pasta`
+  installiert lassen (Paket `passt`). Auf dieser Maschine war genau das
+  die Ursache; nach dem Entfernen der Zeile lief alles oben Beschriebene
+  ohne jeden Host-networking-Flag.
+- **`esdm`-Binary wird im Container frisch heruntergeladen**, nicht aus dem
+  lokal vendorten `/esdm` (das liegt in `.gitignore`, ist Version 0.12.0 und
+  auf esdm.io nicht mehr mit Prüfsumme verifizierbar – die Website
+  veröffentlicht SHA256 nur für die jeweils aktuelle Version, aktuell 0.14.0,
+  keine historischen Prüfsummen). Der Containerfile-Download zieht
+  `esdm-linux-amd64` Version 0.14.0 von
+  `https://esdm.s3.fr-par.scw.cloud/0.14.0/esdm-linux-amd64` und verifiziert
+  gegen die auf esdm.io/getting-started/installing-esdm/ veröffentlichte
+  SHA256 (`c0a786972300f6f7e71e645f009b8e7b8b7967c8837daf9e51f968e756e1716e`)
+  per `sha256sum -c`, bevor die Datei ausführbar gemacht wird.
+- **Tauri bewusst NICHT im Container**: keine `webkit2gtk`/`libsoup`-Pakete
+  im Containerfile. Das Desktop-Bundle wird nativ auf dem jeweiligen Host-OS
+  gebaut (siehe die auskommentierte `tauri-build`-Matrix in
+  `.github/workflows/ci.yml`), nicht im Dev-Container.
+- **VS-Code-Extensions vordeklariert** in `devcontainer.json`
+  (`customizations.vscode.extensions`): `rust-lang.rust-analyzer`,
+  `tamasfe.even-better-toml`, `stevejpurves.cucumber` (Gherkin-Syntax für
+  die `.feature`-Dateien unter `crates/octlab-lab/tests/features/`).
+- **Cross-Compiling (Pi/aarch64) bleibt außerhalb des Dev-Containers**, siehe
+  unten – das ist ein CI-Konzern, kein Dev-Loop-Konzern.
+- **`cargo-deny` ist auf `0.18.3` gepinnt** (Containerfile), nicht die
+  neueste Version. `cargo-deny` ab 0.19 verlangt rustc ≥1.88, das
+  Basisimage `rust:1.85-bookworm` bringt aber 1.85.1 mit; 0.18.3 ist die
+  letzte Version, die damit noch baut. Beim nächsten Bump des Basisimages
+  auf rustc ≥1.88 kann der Pin entfallen.
+
 ## Build & Test
 
 ```bash
