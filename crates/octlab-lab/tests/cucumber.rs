@@ -152,5 +152,14 @@ fn then_broadcast_value(world: &mut LabWorld, expected: f64) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let features = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/features");
-    LabWorld::run(features).await;
+    // fail_on_skipped(): cucumber-rs kennt kein eigenes "undefiniert" - ein
+    // Step ohne Regex-Treffer erzeugt exakt dasselbe Skipped-Event wie ein
+    // bewusst nicht erreichter Step (siehe cucumber::event::Step::Skipped-
+    // Doc). Ohne fail_on_skipped() ist das für den Prozess-Exit-Code
+    // folgenlos - LabWorld::run() (= cucumber().run_and_exit()) endet mit
+    // 0, selbst wenn Szenarien nie über ihren ersten Step hinauskommen.
+    LabWorld::cucumber()
+        .fail_on_skipped()
+        .run_and_exit(features)
+        .await;
 }
