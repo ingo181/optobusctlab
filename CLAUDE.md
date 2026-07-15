@@ -47,6 +47,11 @@ Steuer-/Mess-UI für Carsten Meyers c't-Lab (Baukasten-Messsystem, c't-Artikelse
 Zielbild: Raspberry Pi mit 7"-Touch auf dem c't-Lab-Gehäuse (Kiosk-Browser) +
 Desktop-App via Tauri, gleiche UI, gemeinsamer Rust-Code.
 
+**Quellen (`www.ct-lab.de` ist tot – c't hat die Inhalte entfernt):**
+- https://ctlabforum.thoralt.de – Community-Forum, u.a. Syntax-/Subkanal-Fragen
+- https://www.sn7400.de/ctlab/ – ebenfalls Syntax-/Protokoll-Doku
+- https://www.segor.de/INFO/ct-lab.shtml – Bezugsquelle Bauteile
+
 ## Architektur (4 Schichten, angelehnt an die C#-"CtLab Library" von J. Raum)
 
 ```
@@ -308,7 +313,9 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    das muss noch verdrahtet werden (z.B. Konfiguration/Env-Var in
    `octlab-server`).
 3. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
-   IMMER gegen die tagesaktuelle Syntax-Tabelle auf www.ct-lab.de verifizieren,
+   IMMER gegen die aktuelle Syntax-Doku im Community-Forum
+   (https://ctlabforum.thoralt.de) und/oder https://www.sn7400.de/ctlab/
+   verifizieren (`www.ct-lab.de` selbst ist tot, siehe "Quellen" oben),
    nicht blind aus den PDF-Artikeln von 2007 übernehmen (Firmware-Updates
    haben Subkanäle teils verschoben, siehe "Flashen der c't-Lab-Firmware.pdf").
 4. Persistenz (SurrealDB embedded, `kv-rocksdb`) für Messreihen-Aufzeichnung –

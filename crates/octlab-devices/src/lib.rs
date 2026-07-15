@@ -7,13 +7,15 @@
 //!
 //! Neue Module (DCG, DIV, ADA-IO, ...) folgen demselben Muster wie [`Dds`]
 //! hier: ein Struct mit der Moduladresse, private Subkanal-Konstanten (siehe
-//! c't-Lab-Syntax-Tabelle unter www.ct-lab.de), und Methoden, die `Command`-
-//! bzw. `ChannelKey`-Werte für die Query-Ebene in `octlab-lab` produzieren.
+//! c't-Lab-Syntax-Doku im Community-Forum, https://ctlabforum.thoralt.de,
+//! und/oder https://www.sn7400.de/ctlab/ – `www.ct-lab.de` selbst ist tot),
+//! und Methoden, die `Command`- bzw. `ChannelKey`-Werte für die Query-Ebene
+//! in `octlab-lab` produzieren.
 //!
 //! HINWEIS: Die Subkanal-Zuordnung unten (FREQUENCY=0, LEVEL=1) ist aus dem
 //! c't-Artikel "DDS-Funktionsgenerator-Modul" abgeleitet, aber gegen die
-//! tagesaktuelle Syntax-Tabelle auf www.ct-lab.de zu verifizieren, bevor du
-//! gegen echte Hardware sendest – Firmware-Updates haben die Zuordnung laut
+//! aktuelle Syntax-Doku (siehe oben) zu verifizieren, bevor du gegen echte
+//! Hardware sendest – Firmware-Updates haben die Zuordnung laut
 //! Originaldokumentation gelegentlich verschoben.
 
 use octlab_protocol::{ChannelKey, Command, ModuleAddress, SubChannel};
