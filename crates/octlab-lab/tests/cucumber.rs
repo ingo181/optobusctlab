@@ -89,6 +89,19 @@ fn given_unsolicited(world: &mut LabWorld, response: String) {
         .push_response(response);
 }
 
+// Bewusst eigener Step statt given_unsolicited() wiederzuverwenden: intern
+// identisch (push_response), aber "unaufgefordert" verspricht einen
+// parsebaren Wert - das wäre hier semantisch falsch, siehe
+// malformed_input.feature.
+#[given(expr = "das Modul sendet eine Zeile ohne gültiges Nachrichtenformat {string}")]
+fn given_malformed_line(world: &mut LabWorld, raw_line: String) {
+    world
+        .connection
+        .as_mut()
+        .expect("Connection schon gespawnt - Given-Schritte müssen vor dem ersten When kommen")
+        .push_response(raw_line);
+}
+
 #[when(expr = "ich Subkanal {int} an Adresse {int} abfrage")]
 async fn when_query(world: &mut LabWorld, subchannel: u8, address: u8) {
     ensure_spawned(world);
