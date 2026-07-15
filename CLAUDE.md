@@ -145,13 +145,30 @@ Original-Artikeln gilt das hier.
   - Adresse 4: DDS, FW 3.71
   - Adresse 3: unbelegt – die Discovery-Semantik im ESDM-Modell (ein Modul
     antwortet oder eben nicht) bildet das ab, kein Sonderfall nötig.
-- **Beispielantwort** auf `1:VAL 0?`: `#1:0=0.0022024` (DIV, offene Klemmen).
-- **Echo-Verhalten:** Die gesendete Zeile wird vom XPort/den Modulen in der
-  Empfangsausgabe zurückgespiegelt (z.B. erscheint `*:IDN?` selbst wieder im
-  Empfangsstream). `parse_message()` verwirft das bereits korrekt (kein
-  `#`-Präfix) – das ist aber ein bewusstes Szenario und sollte auch als
-  solches spezifiziert werden (eigenes Cucumber-Szenario "Echo wird
-  ignoriert"), nicht nur implizit vom Parser-Verhalten abhängen.
+- **Beispielantwort** auf `1:VAL 0?`: `#1:0=0.0022024` (DIV, offene Klemmen,
+  Wert schwankt zwischen Messungen – ADC-Rauschen an offenen Klemmen, kein
+  Fehler).
+- **Zeilenende ist konsistent CR/LF (`\r\n`, Bytes `0d 0a`)** – per
+  Byte-Level-Test (`xxd` auf die rohen TCP-Antwortbytes) verifiziert, keine
+  Ausnahme über mehrere Kommandos/Module hinweg beobachtet.
+- **Echo-Verhalten ist kommando-abhängig, nicht pauschal:** Ein
+  **Broadcast**-Kommando (`*:IDN?`) erscheint selbst zuerst im
+  Empfangsstream, bevor die eigentlichen Modul-Antworten folgen (reproduziert
+  über mehrere Testläufe). Ein **adressiertes** Kommando (`1:IDN?`,
+  `1:VAL 0?`) zeigt dagegen KEIN Echo – direkt nur die Antwort, ohne
+  vorausgehende Zeilen. Die Handhabung dafür liegt bewusst generisch in
+  `parse_message`/`Lab::dispatch` (jede Zeile ohne `#`-Präfix wird verworfen,
+  Echo ist nur einer von mehreren möglichen Fällen ungültiger Eingabezeilen,
+  keine eigene Sonderbehandlung nötig) – spezifiziert über
+  `crates/octlab-lab/tests/features/malformed_input.feature`.
+- **TCP-Fragmentierung tritt real auf, nicht nur synthetisch im Test:** Beim
+  Hardwaretest von `*:IDN?` kam die Fünf-Zeilen-Antwort (Echo + vier Module)
+  über drei separate `read()`-Aufrufe (97 + 36 + 46 Bytes) herein, davon
+  einer mitten im Wort geschnitten (`"...2.92 [D"` / `"CG by CM/c't
+  05/2010]..."`, mitten in "DCG"). `TcpConnection::recv_line()` (siehe
+  `specs/0001-tcp-connection.md`, AK5) hat trotzdem korrekt rekonstruiert.
+  Bestätigt: das ist kein theoretisches Edge-Case-Szenario, sondern normales
+  Verhalten dieser Hardware/dieses XPorts.
 
 ## Dev Container (Podman)
 
@@ -281,16 +298,38 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
 
 ## Nächste Schritte (Reihenfolge, nicht alles auf einmal)
 
-1. `TcpConnection` in `octlab-transport` (roher Socket zum XPort, Port 10001)
-2. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
+1. ~~`TcpConnection` in `octlab-transport` (roher Socket zum XPort, Port
+   10001)~~ – **erledigt**, siehe `specs/0001-tcp-connection.md` (Status
+   "Umgesetzt") und "Verifizierte Hardware-Fakten" oben.
+2. Anbindung an `octlab-lab`: Der Actor (`Lab::spawn`) nimmt aktuell
+   irgendeinen `Box<dyn BoardConnection>` entgegen, aber es gibt noch keinen
+   Weg, im laufenden Betrieb (Server-Start, UI) zwischen `SimulatedConnection`
+   (Default, hardware-frei) und `TcpConnection` (echte Anlage) zu wählen –
+   das muss noch verdrahtet werden (z.B. Konfiguration/Env-Var in
+   `octlab-server`).
+3. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
    IMMER gegen die tagesaktuelle Syntax-Tabelle auf www.ct-lab.de verifizieren,
    nicht blind aus den PDF-Artikeln von 2007 übernehmen (Firmware-Updates
    haben Subkanäle teils verschoben, siehe "Flashen der c't-Lab-Firmware.pdf").
-3. Persistenz (SurrealDB embedded, `kv-rocksdb`) für Messreihen-Aufzeichnung –
+4. Persistenz (SurrealDB embedded, `kv-rocksdb`) für Messreihen-Aufzeichnung –
    eigene Schicht, nicht in `octlab-lab` – Vorschlag: `octlab-recording`-Crate,
    die `lab.subscribe()` konsumiert und optional in SurrealDB schreibt.
-4. `apps/web` (Leptos) – erst UI, wenn Backend-Kern stabil ist.
-5. `apps/desktop` (Tauri) – bündelt `octlab-server` + `apps/web`.
+5. `apps/web` (Leptos) – erst UI, wenn Backend-Kern stabil ist.
+6. `apps/desktop` (Tauri) – bündelt `octlab-server` + `apps/web`.
+
+## Backlog (kein aktiver Schritt, nur vorgemerkt)
+
+- **Mnemonic-Syntax (`VAL`, `FRQ`, `IDN`, ...) statt reiner Subkanal-Nummern
+  in `Command::to_wire()`** – bewusst NICHT umgesetzt (Entscheidung bei
+  Spec 0001, s. `specs/0001-tcp-connection.md`): Antworten kommen immer
+  numerisch zurück, `ChannelKey` muss also so oder so die numerische
+  Subkanal-Nummer als kanonische Identität führen. Mnemonics beim Senden
+  lösen das Firmware-Drift-Problem an der jetzigen Architektur NICHT (ein
+  verschobener Subkanal bricht die Pending-Map-Korrelation trotzdem), sie
+  wären nur kosmetisch. Erst relevant, wenn Firmware-Drift real zuschlägt
+  UND wir bereit sind, eine dynamische Syntax-Auflösung zur Laufzeit zu
+  bauen (Subkanal-Zuordnung von der Hardware selbst abfragen statt statisch
+  in `octlab-devices` zu hardcoden) – dann eigene Spec, kein Nebenbei-Umbau.
 
 ## Für den Menschen im Projekt
 
