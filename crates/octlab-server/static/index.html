@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>octlab-server – Live-Werte</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #ccc; padding: 0.35rem 0.9rem; text-align: right; font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  caption { text-align: left; margin-bottom: 0.5rem; color: #666; font-size: 0.9rem; }
+  #status { color: #666; }
+</style>
+</head>
+<body>
+<!--
+  PROVISORIUM - statische Seite ohne Framework, direkt von octlab-server
+  ausgeliefert (siehe main.rs, Route "/"). Nur zum Live-Beweis der
+  TcpConnection-Anbindung gedacht. Fliegt komplett raus, sobald apps/web
+  (Leptos) steht - siehe CLAUDE.md, Abschnitt "Nächste Schritte".
+-->
+<h1>octlab-server – Live-Werte</h1>
+<p id="status">verbinde…</p>
+<table id="values">
+  <caption>ein Eintrag pro Adresse/Subkanal, letzter Wert gewinnt</caption>
+  <thead><tr><th>Adresse</th><th>Subkanal</th><th>Wert</th><th>Status</th></tr></thead>
+  <tbody></tbody>
+</table>
+<script>
+  const rows = new Map();
+  const tbody = document.querySelector("#values tbody");
+  const statusEl = document.getElementById("status");
+
+  function render(msg) {
+    const key = `${msg.address}:${msg.subchannel}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = document.createElement("tr");
+      row.innerHTML = "<td></td><td></td><td></td><td></td>";
+      tbody.appendChild(row);
+      rows.set(key, row);
+    }
+    const [addrCell, subCell, valueCell, statusCell] = row.children;
+    addrCell.textContent = msg.address;
+    subCell.textContent = msg.subchannel;
+    valueCell.textContent = msg.value;
+    statusCell.textContent = msg.status_text ?? "";
+  }
+
+  function connect() {
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => { statusEl.textContent = "verbunden"; };
+    ws.onmessage = (event) => render(JSON.parse(event.data));
+    ws.onerror = () => ws.close();
+    ws.onclose = () => {
+      statusEl.textContent = "getrennt, versuche erneut…";
+      setTimeout(connect, 1000);
+    };
+  }
+  connect();
+</script>
+</body>
+</html>

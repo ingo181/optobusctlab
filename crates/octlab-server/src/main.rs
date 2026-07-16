@@ -15,16 +15,17 @@ use axum::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         State,
     },
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     routing::get,
     Json, Router,
 };
 use clap::Parser;
 use octlab_lab::Lab;
-use octlab_protocol::Message as LabMessage;
+use octlab_protocol::{ChannelKey, Message as LabMessage, ModuleAddress, SubChannel};
 use octlab_transport::{BoardConnection, SimulatedConnection, TcpConnection};
 use serde::Serialize;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Wahl der Verbindungsebene beim Start. Default `Simulation` – sicher,
 /// läuft überall ohne angeschlossenes c't-Lab. `Tcp` ist bewusst nur
@@ -100,9 +101,7 @@ async fn main() {
     // Fall ab, dass `connect()` selbst nicht zeitnah scheitert (z.B. ein
     // gefiltertes statt aktiv abgelehntes TCP-SYN hängt sonst an den
     // OS-Timeouts, die deutlich über 3s liegen können).
-    let lab = match tokio::time::timeout(std::time::Duration::from_secs(3), Lab::spawn(connection))
-        .await
-    {
+    let lab = match tokio::time::timeout(Duration::from_secs(3), Lab::spawn(connection)).await {
         Ok(Ok(lab)) => Arc::new(lab),
         Ok(Err(err)) => {
             eprintln!("c't-Lab-Verbindung fehlgeschlagen: {err}");
@@ -114,9 +113,17 @@ async fn main() {
         }
     };
 
+    // PROVISORIUM: nur wenn wirklich Hardware dranhängt, macht ein Poll
+    // überhaupt Sinn (SimulatedConnection hat sowieso keine Warteschlange
+    // gefüllt) - siehe Doc-Kommentar an `poll_div_provisional`.
+    if cli.connection == ConnectionKind::Tcp {
+        tokio::spawn(poll_div_provisional(lab.clone()));
+    }
+
     let state = AppState { lab };
 
     let app = Router::new()
+        .route("/", get(index))
         .route("/health", get(health))
         .route("/ws", get(ws_upgrade))
         .with_state(state);
@@ -128,8 +135,36 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+// PROVISORIUM: statische Seite ohne Framework, nur zum Live-Beweis der
+// TcpConnection-Anbindung. Fliegt komplett raus, sobald apps/web (Leptos)
+// steht - siehe CLAUDE.md, Abschnitt "Nächste Schritte".
+async fn index() -> Html<&'static str> {
+    Html(include_str!("../static/index.html"))
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+/// PROVISORIUM: pollt einen einzelnen fest verdrahteten Kanal (DIV, Adresse
+/// 1, Subkanal 0 - siehe "Verifizierte Hardware-Fakten" in CLAUDE.md) alle
+/// 500ms, rein damit die statische Seite unter `/` überhaupt Live-Werte zu
+/// sehen bekommt. `query()`s Ergebnis wird bewusst ignoriert (`let _ =`) -
+/// die eigentliche Zustellung an WebSocket-Clients passiert unabhängig
+/// davon in `Lab::dispatch`, das JEDE eingehende Nachricht broadcastet,
+/// nicht nur Query-Antworten. Fliegt raus, sobald `apps/web` eine echte
+/// Subscription-/Sweep-Logik mitbringt - siehe CLAUDE.md, Abschnitt
+/// "Nächste Schritte".
+async fn poll_div_provisional(lab: Arc<Lab>) {
+    let key = ChannelKey {
+        address: ModuleAddress(1),
+        subchannel: SubChannel(0),
+    };
+    let mut interval = tokio::time::interval(Duration::from_millis(500));
+    loop {
+        interval.tick().await;
+        let _ = lab.query(key).await;
+    }
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {

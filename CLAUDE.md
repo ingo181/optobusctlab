@@ -335,22 +335,33 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    TCP-Session" unter "Verifizierte Hardware-Fakten" oben – der Grund, warum
    das NICHT als separater Preflight-Connect in `octlab-server` gelöst ist).
    Live gegen die reale Anlage verifiziert: `1:VAL 0?` liefert einen echten
-   DIV-Messwert über `Lab::query()`. Noch offen: `octlab-server` hat noch
-   keine Route, um über HTTP/WS selbst eine Query anzustoßen (nur `/ws` zum
-   passiven Abonnieren) – der komplette Hardware→Server→Browser-Durchstich
-   mit einer vom Frontend ausgelösten Abfrage ist deshalb noch nicht
-   gezeigt, nur die Actor-Ebene (Hardware→`Lab`) ist live bewiesen.
-3. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
+   DIV-Messwert über `Lab::query()`.
+3. ~~Kompletter Hardware→Server→Browser-Durchstich~~ – **erledigt, aber
+   bewusst als Wegwerf-Provisorium**: `octlab-server` liefert unter `/` eine
+   einzelne statische HTML-Seite aus (`crates/octlab-server/static/index.html`,
+   `include_str!` eingebettet, kein Build-Schritt, kein Framework), deren
+   Inline-JS sich an `/ws` hängt und pro Adresse/Subkanal den letzten Wert in
+   einer Tabelle anzeigt. Damit überhaupt Werte fließen, pollt eine
+   Server-Task (`poll_div_provisional` in `main.rs`) alle 500ms fest
+   `1:VAL 0?` (DIV, Adresse 1, Subkanal 0) – nur aktiv bei
+   `--connection tcp`, für `simulation` bleibt die Seite statisch leer. Live
+   gegen die reale Anlage verifiziert: echte, tickende DIV-Messwerte im
+   Browser. **Fliegt komplett wieder raus** (Route, Datei, Poll-Task),
+   sobald `apps/web` (Leptos, siehe Schritt 6) eine echte
+   Subscription-/Sweep-Logik mitbringt – so markiert im Datei- und
+   Funktionskommentar.
+4. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
    IMMER gegen die aktuelle Syntax-Doku im Community-Forum
    (https://ctlabforum.thoralt.de) und/oder https://www.sn7400.de/ctlab/
    verifizieren (`www.ct-lab.de` selbst ist tot, siehe "Quellen" oben),
    nicht blind aus den PDF-Artikeln von 2007 übernehmen (Firmware-Updates
    haben Subkanäle teils verschoben, siehe "Flashen der c't-Lab-Firmware.pdf").
-4. Persistenz (SurrealDB embedded, `kv-rocksdb`) für Messreihen-Aufzeichnung –
+5. Persistenz (SurrealDB embedded, `kv-rocksdb`) für Messreihen-Aufzeichnung –
    eigene Schicht, nicht in `octlab-lab` – Vorschlag: `octlab-recording`-Crate,
    die `lab.subscribe()` konsumiert und optional in SurrealDB schreibt.
-5. `apps/web` (Leptos) – erst UI, wenn Backend-Kern stabil ist.
-6. `apps/desktop` (Tauri) – bündelt `octlab-server` + `apps/web`.
+6. `apps/web` (Leptos) – erst UI, wenn Backend-Kern stabil ist. Löst das
+   Provisorium aus Schritt 3 ab.
+7. `apps/desktop` (Tauri) – bündelt `octlab-server` + `apps/web`.
 
 ## Backlog (kein aktiver Schritt, nur vorgemerkt)
 
