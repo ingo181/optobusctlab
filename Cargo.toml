@@ -6,6 +6,7 @@ members = [
     "crates/octlab-devices",
     "crates/octlab-lab",
     "crates/octlab-server",
+    "apps/desktop",
 ]
 
 [workspace.package]

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "octlab-desktop",
+  "version": "0.1.0",
+  "identifier": "de.optobusctlab.desktop.dev",
+  "build": {
+    "frontendDist": "http://localhost:3000"
+  },
+  "app": {
+    "windows": []
+  },
+  "bundle": {}
+}

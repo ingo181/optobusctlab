@@ -4,6 +4,10 @@
 .idea/
 .vscode/
 
+# Tauri: von tauri-build bei jedem Build neu generierte ACL-/Capability-
+# Schemas, kein Repo-Inhalt (siehe apps/desktop/build.rs).
+apps/*/gen/schemas/
+
 # ESDM-CLI-Binary (lokales Tool, kein Repo-Inhalt) - NICHT die Modelldateien.
 # Führender Slash bindet das an den Repo-Root, damit weder Unterverzeichnisse
 # noch *.esdm.yaml-Dateien versehentlich mitgetroffen werden.

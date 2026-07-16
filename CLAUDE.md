@@ -60,10 +60,19 @@ crates/
   octlab-protocol    Kommando/Nachricht: c't-Lab-ASCII-Syntax parsen & bauen
   octlab-devices     Geräteebene: typisierte Module (Dds, künftig Dcg/Div/AdaIo/...)
   octlab-lab         Umgebungsebene: Lab-Actor, Sync-Query mit Timeout, Broadcast
-  octlab-server      Axum: HTTP/WebSocket, nutzt octlab-lab
-apps/               (noch nicht angelegt)
-  web/              Leptos-Frontend (WASM)
-  desktop/          Tauri-Wrapper um octlab-server + web/
+  octlab-server      Axum: HTTP/WebSocket, nutzt octlab-lab. lib.rs (Router-
+                     Aufbau, `build_app()`) + main.rs (dünner CLI-Wrapper via
+                     clap) getrennt, damit apps/desktop denselben Router-Code
+                     nutzen kann, ohne CLI-Parsing mitzuschleppen.
+apps/
+  desktop/          Tauri 2.x, bündelt octlab-server intern (Tokio-Task im
+                     selben Prozess, kein Kindprozess) + zeigt dessen UI in
+                     einer WebView. Aktuell noch Provisorium-Status, siehe
+                     "Nächste Schritte" - zeigt nur das Architektur-Muster
+                     (Server-Embedding + WebView), keine eigene UI.
+  web/              (noch nicht angelegt) Leptos-Frontend (WASM), löst das
+                     Wegwerf-HTML in octlab-server/static/ ab (Browser UND
+                     Tauri-WebView zeigen dann dasselbe gebündelte Frontend).
 ```
 
 Jede Schicht kennt nur die darunterliegende, nie umgekehrt. Neue Module folgen
@@ -271,7 +280,17 @@ esdm lint domain.esdm.yaml
 - **Tauri bewusst NICHT im Container**: keine `webkit2gtk`/`libsoup`-Pakete
   im Containerfile. Das Desktop-Bundle wird nativ auf dem jeweiligen Host-OS
   gebaut (siehe die auskommentierte `tauri-build`-Matrix in
-  `.github/workflows/ci.yml`), nicht im Dev-Container.
+  `.github/workflows/ci.yml`), nicht im Dev-Container. `apps/desktop`
+  existiert inzwischen (siehe Architektur oben) und baut/läuft nur nativ auf
+  dem Host, nie im Container - `cargo build -p octlab-desktop` schlägt im
+  Container fehl (fehlende `webkit2gtk-4.1`-Header etc.), das ist erwartet,
+  kein Bug. Auf EndeavourOS/Arch waren `webkit2gtk-4.1`, `base-devel`,
+  `curl`, `wget`, `file`, `openssl`, `libappindicator` (erfüllt
+  `libappindicator-gtk3`) und `librsvg` bereits installiert; `cargo deny
+  check licenses` verlangt seit `apps/desktop` zusätzlich `MPL-2.0` in der
+  Allow-Liste (`deny.toml`) - kommt transitiv über `wry`
+  (`cssparser`/`selectors`/`dtoa-short`) und `dirs` (`option-ext`), weak/
+  dateibasiertes Copyleft, unproblematisch für dieses MIT-Projekt.
 - **VS-Code-Extensions vordeklariert** in `devcontainer.json`
   (`customizations.vscode.extensions`): `rust-lang.rust-analyzer`,
   `tamasfe.even-better-toml`, `stevejpurves.cucumber` (Gherkin-Syntax für
@@ -342,26 +361,54 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    `include_str!` eingebettet, kein Build-Schritt, kein Framework), deren
    Inline-JS sich an `/ws` hängt und pro Adresse/Subkanal den letzten Wert in
    einer Tabelle anzeigt. Damit überhaupt Werte fließen, pollt eine
-   Server-Task (`poll_div_provisional` in `main.rs`) alle 500ms fest
-   `1:VAL 0?` (DIV, Adresse 1, Subkanal 0) – nur aktiv bei
+   Server-Task (`poll_div_provisional`, jetzt in `octlab-server/src/lib.rs`)
+   alle 500ms fest `1:VAL 0?` (DIV, Adresse 1, Subkanal 0) – nur aktiv bei
    `--connection tcp`, für `simulation` bleibt die Seite statisch leer. Live
    gegen die reale Anlage verifiziert: echte, tickende DIV-Messwerte im
    Browser. **Fliegt komplett wieder raus** (Route, Datei, Poll-Task),
-   sobald `apps/web` (Leptos, siehe Schritt 6) eine echte
+   sobald `apps/web` (Leptos, siehe Schritt 7) eine echte
    Subscription-/Sweep-Logik mitbringt – so markiert im Datei- und
    Funktionskommentar.
-4. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
+4. ~~`apps/desktop` (Tauri): minimales Server-Embedding-Gerüst~~ –
+   **erledigt, ebenfalls Provisorium**. `octlab-server` wurde dafür in
+   `lib.rs` (Router-Aufbau, `pub async fn build_app()`) und `main.rs`
+   (dünner `clap`-Wrapper) aufgeteilt, damit `apps/desktop` denselben
+   Router-Code direkt aufrufen kann statt ihn zu duplizieren oder
+   `octlab-server` als Kindprozess zu starten. `apps/desktop/src/main.rs`
+   startet `build_app()` + `axum::serve()` als Tokio-Task im selben Prozess
+   (`tauri::async_runtime::spawn`, fail-fast synchron via `block_on` VOR
+   der Fenstererstellung) und öffnet ein natives WebView-Fenster auf
+   `http://localhost:3000` (`WebviewWindowBuilder`, `WebviewUrl::External` -
+   `tauri.conf.json` deklariert bewusst kein Fenster, `frontendDist` zeigt
+   direkt auf die URL statt auf ein gebündeltes Verzeichnis). Config bewusst
+   minimal: zwei Env-Vars (`OCTLAB_CONNECTION`, `OCTLAB_ADDR`), kein `clap`
+   in der Desktop-App (keine sinnvolle CLI für ein GUI-Programm), Default
+   `simulation`. Braucht einen Platzhalter-Icon (`apps/desktop/icons/icon.png`,
+   128×128 RGBA - `tauri::generate_context!()` bricht sonst zur Compile-Zeit
+   ab) und `MPL-2.0` in `deny.toml` (siehe "Dev Container" oben). Läuft NUR
+   nativ, nie im Dev-Container (siehe dort). Live gegen die reale Anlage
+   verifiziert: natives Fenster ("octlab-desktop (Provisorium)"), echte
+   tickende DIV-Werte. **Fliegt komplett wieder raus** (bzw. wird umgebaut,
+   um `apps/web`s gebündeltes Frontend zu zeigen statt der Wegwerf-Seite),
+   sobald `apps/web` (Leptos, Schritt 7) steht.
+5. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
    IMMER gegen die aktuelle Syntax-Doku im Community-Forum
    (https://ctlabforum.thoralt.de) und/oder https://www.sn7400.de/ctlab/
    verifizieren (`www.ct-lab.de` selbst ist tot, siehe "Quellen" oben),
    nicht blind aus den PDF-Artikeln von 2007 übernehmen (Firmware-Updates
    haben Subkanäle teils verschoben, siehe "Flashen der c't-Lab-Firmware.pdf").
-5. Persistenz (SurrealDB embedded, `kv-rocksdb`) für Messreihen-Aufzeichnung –
+6. Persistenz (SurrealDB embedded, `kv-rocksdb`) für Messreihen-Aufzeichnung –
    eigene Schicht, nicht in `octlab-lab` – Vorschlag: `octlab-recording`-Crate,
    die `lab.subscribe()` konsumiert und optional in SurrealDB schreibt.
-6. `apps/web` (Leptos) – erst UI, wenn Backend-Kern stabil ist. Löst das
-   Provisorium aus Schritt 3 ab.
-7. `apps/desktop` (Tauri) – bündelt `octlab-server` + `apps/web`.
+7. **Nächster aktiver Schritt.** `apps/web` (Leptos) – erst UI, wenn
+   Backend-Kern stabil ist (ist er: `octlab-server` läuft gegen echte
+   Hardware, beide Provisorien aus Schritt 3/4 beweisen die
+   Embedding-Architektur). Löst das Wegwerf-HTML in BEIDEN Anzeigen ab -
+   Browser (`octlab-server`s `/`-Route) UND Tauri-WebView (`apps/desktop`) -
+   dieselbe Leptos-App, einmal gebündelt.
+8. `apps/desktop` (Tauri) – Bundling/Installer/Icon-Feinschliff, sobald
+   `apps/web` das echte Frontend liefert. Das reine Server-Embedding+WebView-
+   Muster ist mit Schritt 4 bereits bewiesen.
 
 ## Backlog (kein aktiver Schritt, nur vorgemerkt)
 

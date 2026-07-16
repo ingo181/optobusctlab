@@ -14,6 +14,12 @@ allow = [
     # (Cargo.toml-Lizenz "(MIT OR Apache-2.0) AND Unicode-3.0"); MIT-kompatibel.
     "Unicode-3.0",
     "Zlib",
+    # MPL-2.0: weak/dateibasiertes Copyleft, kommt transitiv über wry
+    # (Tauris WebView-Layer, apps/desktop) - cssparser, cssparser-macros,
+    # selectors (alle via wrys dom_query) sowie option-ext (via dirs).
+    # Kein Problem für dieses MIT-lizenzierte Projekt, das diese Crates nur
+    # unverändert nutzt statt zu forken/verändert weiterzugeben.
+    "MPL-2.0",
 ]
 confidence-threshold = 0.9
 # ISC, Unicode-DFS-2016 und Zlib werden aktuell von keiner Dependency genutzt -

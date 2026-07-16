@@ -1,0 +1,16 @@
+[package]
+name = "octlab-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+tauri = "2"
+octlab-server = { path = "../../crates/octlab-server" }
+axum = "0.7"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = "0.3"
