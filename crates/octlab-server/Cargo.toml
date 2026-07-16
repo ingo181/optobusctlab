@@ -11,6 +11,7 @@ octlab-transport = { path = "../octlab-transport" }
 octlab-devices = { path = "../octlab-devices" }
 tokio.workspace = true
 tracing.workspace = true
+clap.workspace = true
 tracing-subscriber = "0.3"
 axum = { version = "0.7", features = ["ws"] }
 serde.workspace = true

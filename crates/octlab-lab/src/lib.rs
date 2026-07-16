@@ -25,7 +25,7 @@
 //! bildet die reale Hardware-Topologie 1:1 ab, statt sie zu verstecken.
 
 use octlab_protocol::{parse_message, ChannelKey, Command, Message};
-use octlab_transport::BoardConnection;
+use octlab_transport::{BoardConnection, TransportError};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,10 +43,25 @@ pub struct Lab {
 }
 
 impl Lab {
-    /// Startet die Actor-Task für die übergebene Verbindung und gibt ein
-    /// `Lab`-Handle zurück, das beliebig oft `clone()`d werden kann (billig:
-    /// nur Channel-Handles, keine eigene Verbindung).
-    pub fn spawn(mut connection: Box<dyn BoardConnection>) -> Self {
+    /// Verbindet und startet die Actor-Task für die übergebene Verbindung,
+    /// gibt dann ein `Lab`-Handle zurück, das beliebig oft `clone()`d werden
+    /// kann (billig: nur Channel-Handles, keine eigene Verbindung).
+    ///
+    /// `connect()` passiert bewusst HIER, vor dem `tokio::spawn`, und nicht
+    /// als erster Schritt innerhalb der Actor-Task: ein Aufrufer, der einen
+    /// Verbindungsfehler fail-fast behandeln will (z.B. `octlab-server` beim
+    /// Start), braucht das Ergebnis synchron zurück. Würde stattdessen die
+    /// Task selbst verbinden, gäbe es kein Signal nach außen außer einem
+    /// Log-Eintrag – der Aufrufer hätte ein scheinbar funktionierendes
+    /// `Lab`-Handle, dessen `query()` aber für immer timeoutet. Ein
+    /// zusätzlicher separater "Preflight"-Connect vor diesem hier wäre KEINE
+    /// Alternative: am echten XPort (nur eine aktive TCP-Session gleichzeitig)
+    /// wurde live beobachtet, dass ein zweiter Connect-Versuch kurz nach dem
+    /// ersten mit "Connection refused" abgewiesen wird – der Connect, der
+    /// geprüft wird, muss also derselbe sein, der auch benutzt wird.
+    pub async fn spawn(mut connection: Box<dyn BoardConnection>) -> Result<Self, TransportError> {
+        connection.connect().await?;
+
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<String>();
         let pending: Arc<Mutex<HashMap<ChannelKey, oneshot::Sender<Message>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -56,11 +71,6 @@ impl Lab {
         let updates_for_task = updates_tx.clone();
 
         tokio::spawn(async move {
-            if let Err(err) = connection.connect().await {
-                tracing::error!(?err, "c't-Lab-Verbindung fehlgeschlagen");
-                return;
-            }
-
             loop {
                 tokio::select! {
                     biased;
@@ -91,11 +101,11 @@ impl Lab {
             }
         });
 
-        Self {
+        Ok(Self {
             outgoing: outgoing_tx,
             pending,
             updates: updates_tx,
-        }
+        })
     }
 
     fn dispatch(
@@ -168,7 +178,7 @@ mod tests {
     async fn query_resolves_with_matching_response() {
         let mut sim = SimulatedConnection::new("sim");
         sim.push_response("#0:0=1.23456");
-        let lab = Lab::spawn(Box::new(sim));
+        let lab = Lab::spawn(Box::new(sim)).await.unwrap();
 
         let key = ChannelKey {
             address: ModuleAddress(0),
@@ -181,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn query_times_out_without_response() {
         let sim = SimulatedConnection::new("sim"); // keine Antwort in der Queue
-        let lab = Lab::spawn(Box::new(sim));
+        let lab = Lab::spawn(Box::new(sim)).await.unwrap();
 
         let key = ChannelKey {
             address: ModuleAddress(0),
@@ -196,7 +206,7 @@ mod tests {
         let mut sim = SimulatedConnection::new("sim");
         // Simuliert z.B. eine Panel-Bedienung: Wert kommt ohne vorherige Abfrage.
         sim.push_response("#2:1=42.0");
-        let lab = Lab::spawn(Box::new(sim));
+        let lab = Lab::spawn(Box::new(sim)).await.unwrap();
 
         let mut rx = lab.subscribe();
         let msg = rx.recv().await.unwrap();

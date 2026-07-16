@@ -6,9 +6,9 @@
 //! - eingebettet in der Tauri-Desktop-App (Tauri startet diesen Server
 //!   intern und zeigt dieselbe UI in seiner eigenen WebView)
 //!
-//! Absichtlich noch OHNE echte Hardware-Anbindung: Default ist die
-//! `SimulatedConnection`, damit `cargo run` sofort ohne c't-Lab funktioniert.
-//! Die TCP-Verbindung zum XPort (Port 10001) ist der nächste Schritt.
+//! Default ist die `SimulatedConnection`, damit `cargo run` sofort ohne
+//! c't-Lab funktioniert. Echte Hardware nur explizit über
+//! `--connection tcp --addr <host:port>` (siehe [`Cli`]).
 
 use axum::{
     extract::{
@@ -19,11 +19,36 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use clap::Parser;
 use octlab_lab::Lab;
 use octlab_protocol::Message as LabMessage;
-use octlab_transport::SimulatedConnection;
+use octlab_transport::{BoardConnection, SimulatedConnection, TcpConnection};
 use serde::Serialize;
 use std::sync::Arc;
+
+/// Wahl der Verbindungsebene beim Start. Default `Simulation` – sicher,
+/// läuft überall ohne angeschlossenes c't-Lab. `Tcp` ist bewusst nur
+/// explizit wählbar, nie automatisch erraten (z.B. per Auto-Discovery),
+/// damit auf dem Pi kein Server versehentlich gegen echte Hardware sendet,
+/// wenn eigentlich nur ein UI-Test gemeint war.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ConnectionKind {
+    Simulation,
+    Tcp,
+}
+
+#[derive(Debug, Parser)]
+#[command(about = "octlab-server – Steuer-/Mess-Server für das c't-Lab")]
+struct Cli {
+    /// Verbindungsebene: `simulation` (Default, hardware-frei) oder `tcp` (XPort).
+    #[arg(long, value_enum, default_value_t = ConnectionKind::Simulation)]
+    connection: ConnectionKind,
+
+    /// TCP-Adresse des XPort, z.B. `192.168.1.104:10001`. Nur bei
+    /// `--connection tcp` nötig (und dann auch erforderlich).
+    #[arg(long, required_if_eq("connection", "tcp"))]
+    addr: Option<String>,
+}
 
 /// Über die Leitung ans Frontend geschicktes JSON – bewusst getrennt von
 /// `octlab_protocol::Message`, damit die Protokoll-Ebene nicht von serde
@@ -56,10 +81,38 @@ struct AppState {
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    // TODO: hier später per Config/CLI-Flag zwischen SimulatedConnection,
-    // TcpConnection (XPort) und SerialConnection wählen.
-    let connection = SimulatedConnection::new("dev-simulation");
-    let lab = Arc::new(Lab::spawn(Box::new(connection)));
+    let cli = Cli::parse();
+
+    let connection: Box<dyn BoardConnection> = match cli.connection {
+        ConnectionKind::Simulation => Box::new(SimulatedConnection::new("dev-simulation")),
+        ConnectionKind::Tcp => {
+            // `addr` ist dank `required_if_eq` in Cli garantiert gesetzt.
+            let addr = cli.addr.expect("--addr ist bei --connection tcp Pflicht");
+            Box::new(TcpConnection::new(addr))
+        }
+    };
+
+    // Fail-fast: `Lab::spawn()` verbindet VOR dem Zurückkehren (siehe dessen
+    // Doc-Kommentar) - ein unerreichbares XPort beendet den Prozess hier
+    // sofort mit klarer Fehlermeldung, statt still einen Actor zu starten,
+    // dessen Verbindung im Hintergrund scheitert und dessen Queries dann nur
+    // endlos timeouten würden. Die zusätzliche `timeout()` hier fängt den
+    // Fall ab, dass `connect()` selbst nicht zeitnah scheitert (z.B. ein
+    // gefiltertes statt aktiv abgelehntes TCP-SYN hängt sonst an den
+    // OS-Timeouts, die deutlich über 3s liegen können).
+    let lab = match tokio::time::timeout(std::time::Duration::from_secs(3), Lab::spawn(connection))
+        .await
+    {
+        Ok(Ok(lab)) => Arc::new(lab),
+        Ok(Err(err)) => {
+            eprintln!("c't-Lab-Verbindung fehlgeschlagen: {err}");
+            std::process::exit(1);
+        }
+        Err(_) => {
+            eprintln!("c't-Lab-Verbindung fehlgeschlagen: Timeout nach 3s");
+            std::process::exit(1);
+        }
+    };
 
     let state = AppState { lab };
 

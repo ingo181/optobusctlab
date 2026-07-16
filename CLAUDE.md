@@ -141,6 +141,24 @@ Original-Artikeln gilt das hier.
 
 - **XPort** erreichbar unter `192.168.1.104:10001`, rohes TCP, "Accept
   Incoming: Yes" (Voraussetzung für `TcpConnection`, siehe "Nächste Schritte").
+- **XPort akzeptiert nur eine aktive TCP-Session gleichzeitig.** Live
+  beobachtet beim Verdrahten von `octlab-server` (`--connection tcp`): ein
+  zweiter Connect-Versuch kurz nach einem ersten (z.B. ein Preflight-Check,
+  der danach eine "richtige" Verbindung separat aufbaut) wird mit
+  "Connection refused" abgewiesen, auch wenn der erste Socket bereits
+  wieder geschlossen wurde – die alte Session ist serverseitig offenbar noch
+  nicht vollständig abgebaut. Konsequenz für die Architektur: `Lab::spawn()`
+  verbindet deshalb bewusst nur EINMAL (jetzt `async`, vor dem eigentlichen
+  `tokio::spawn`, gibt `Result` zurück) – ein separater
+  Fail-Fast-Preflight-Connect VOR `Lab::spawn()` ist dadurch keine Option
+  mehr, siehe Doc-Kommentar an `Lab::spawn`.
+  **Troubleshooting:** "Connection refused", obwohl der XPort läuft und
+  erreichbar ist? → prüfen, ob schon eine Session offen ist, bevor ein
+  zweiter Client verbindet. Zählt auch `cargo run --example xport_probe -p
+  octlab-transport` (`specs/0001-tcp-connection.md`) – das gegen einen
+  bereits laufenden `octlab-server --connection tcp` zu starten (oder
+  umgekehrt) reproduziert exakt diesen Fehler, ist kein Bug in
+  `TcpConnection`.
 - **Serielle Einstellung am XPort: 38400/8/None/1** – musste von einem
   falschen Default (9600) korrigiert werden.
 - **Vier Module per `*:IDN?` verifiziert:**
@@ -306,12 +324,22 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
 1. ~~`TcpConnection` in `octlab-transport` (roher Socket zum XPort, Port
    10001)~~ – **erledigt**, siehe `specs/0001-tcp-connection.md` (Status
    "Umgesetzt") und "Verifizierte Hardware-Fakten" oben.
-2. Anbindung an `octlab-lab`: Der Actor (`Lab::spawn`) nimmt aktuell
-   irgendeinen `Box<dyn BoardConnection>` entgegen, aber es gibt noch keinen
-   Weg, im laufenden Betrieb (Server-Start, UI) zwischen `SimulatedConnection`
-   (Default, hardware-frei) und `TcpConnection` (echte Anlage) zu wählen –
-   das muss noch verdrahtet werden (z.B. Konfiguration/Env-Var in
-   `octlab-server`).
+2. ~~Anbindung an `octlab-lab`: Wahl zwischen `SimulatedConnection` und
+   `TcpConnection` beim Server-Start~~ – **erledigt**. `octlab-server` nimmt
+   `--connection simulation|tcp` (Default `simulation`) + `--addr` (Pflicht
+   bei `tcp`) via `clap`. Fail-fast: `Lab::spawn()` ist jetzt `async`,
+   verbindet vor dem `tokio::spawn` und gibt `Result` zurück – ein
+   unerreichbares XPort beendet `octlab-server` sofort mit Fehlermeldung
+   statt einen Actor zu starten, dessen Queries nur endlos timeouten (siehe
+   Doc-Kommentar an `Lab::spawn`, und "XPort akzeptiert nur eine aktive
+   TCP-Session" unter "Verifizierte Hardware-Fakten" oben – der Grund, warum
+   das NICHT als separater Preflight-Connect in `octlab-server` gelöst ist).
+   Live gegen die reale Anlage verifiziert: `1:VAL 0?` liefert einen echten
+   DIV-Messwert über `Lab::query()`. Noch offen: `octlab-server` hat noch
+   keine Route, um über HTTP/WS selbst eine Query anzustoßen (nur `/ws` zum
+   passiven Abonnieren) – der komplette Hardware→Server→Browser-Durchstich
+   mit einer vom Frontend ausgelösten Abfrage ist deshalb noch nicht
+   gezeigt, nur die Actor-Ebene (Hardware→`Lab`) ist live bewiesen.
 3. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
    IMMER gegen die aktuelle Syntax-Doku im Community-Forum
    (https://ctlabforum.thoralt.de) und/oder https://www.sn7400.de/ctlab/

@@ -14,6 +14,13 @@
 //! überhaupt registriert ist - ein klassisches Race, das nur bei diesem
 //! Mock auftreten kann (echte Hardware kann nicht antworten, bevor sie
 //! gefragt wurde). Siehe auch die Kommentare in `ctlab-transport`.
+//!
+//! `Lab::spawn()` ist inzwischen selbst `async` (verbindet fail-fast VOR dem
+//! `tokio::spawn`, siehe `octlab-lab::Lab::spawn`-Doc). Das ändert an obiger
+//! Garantie nichts: `SimulatedConnection::connect()` liefert `Ok(())` beim
+//! ersten Poll, ohne je `Pending` zurückzugeben - ein `.await` auf so eine
+//! Future gibt die Kontrolle nie an den Scheduler ab, ist also für die
+//! Race-Betrachtung oben transparent wie ein normaler synchroner Aufruf.
 
 use cucumber::{given, then, when, World};
 use octlab_lab::Lab;
@@ -54,13 +61,17 @@ impl Default for LabWorld {
 }
 
 /// Startet den Lab-Actor genau einmal, lazy beim ersten When-Schritt.
-fn ensure_spawned(world: &mut LabWorld) {
+async fn ensure_spawned(world: &mut LabWorld) {
     if world.lab.is_none() {
         let connection = world
             .connection
             .take()
             .expect("Connection bereits verbraucht");
-        world.lab = Some(Lab::spawn(Box::new(connection)));
+        world.lab = Some(
+            Lab::spawn(Box::new(connection))
+                .await
+                .expect("SimulatedConnection::connect() schlägt nie fehl"),
+        );
     }
 }
 
@@ -104,7 +115,7 @@ fn given_malformed_line(world: &mut LabWorld, raw_line: String) {
 
 #[when(expr = "ich Subkanal {int} an Adresse {int} abfrage")]
 async fn when_query(world: &mut LabWorld, subchannel: u8, address: u8) {
-    ensure_spawned(world);
+    ensure_spawned(world).await;
     let key = ChannelKey {
         address: ModuleAddress(address),
         subchannel: SubChannel(subchannel),
@@ -115,7 +126,7 @@ async fn when_query(world: &mut LabWorld, subchannel: u8, address: u8) {
 
 #[when(expr = "ich die Live-Updates des Labs abonniere")]
 async fn when_subscribe(world: &mut LabWorld) {
-    ensure_spawned(world);
+    ensure_spawned(world).await;
     // subscribe() ist synchron (kein .await davor) - das ist wichtig,
     // siehe Modul-Kommentar oben: die Registrierung muss passieren,
     // bevor die Actor-Task zum ersten Mal läuft.
