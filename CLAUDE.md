@@ -95,6 +95,16 @@ Zwei Betriebsarten, beide gegen denselben `octlab-server`:
   `apps/web/Trunk.toml`) an :3000 durchgereicht, die relative
   WebSocket-URL im Client funktioniert dadurch in beiden Betriebsarten
   unverändert.
+- **Ohne eingeschaltete Anlage: `cargo run --example fake_xport -p
+  octlab-transport`** startet einen protokoll-echten XPort-Simulator
+  (rohes TCP, CR/LF, antwortet auf das echte Draht-Format `1:0?` mit
+  Sinus + Rauschen über die Gauge-Skala; Adresse als Argument, Default
+  `127.0.0.1:15001`). Server dagegen mit `--connection tcp --addr
+  127.0.0.1:15001` - damit läuft der komplette echte Stack (TcpConnection →
+  Protokoll → Lab-Actor → WebSocket → Frontend), nur die Hardware ist
+  simuliert. Läuft überall, wo cargo läuft, auch im Dev-Container; keine
+  Python- oder Sonstwas-Abhängigkeit. Entstanden beim Live-Beweis von
+  Spec 0002, als die Anlage ausgeschaltet war.
 - **Integriert (Live-Beweis, Desktop, später Pi): `trunk build`.**
   `cd apps/web && trunk build`, dann `cargo run -p octlab-server` vom
   Repo-Root - der Server serviert `apps/web/dist` (Default von

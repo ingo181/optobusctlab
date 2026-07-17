@@ -1,16 +1,19 @@
 # 0002 – Leptos-Frontend mit DIV-Gauge
 
-Status: In Arbeit
+Status: Umgesetzt
 
-> **Stand:** AK1–AK7 grün (`cargo test -p octlab-web` bzw.
-> `cargo test -p octlab-server --test frontend_dist`). Der komplette Stack
-> TcpConnection→Protokoll→Lab-Actor→WebSocket→Frontend ist zusätzlich
-> end-to-end gegen einen Fake-XPort (Scratchpad-Skript, spricht das echte
-> Draht-Protokoll `1:0?` → `#1:0=<wert>`) verifiziert: tickende,
-> sich ändernde Werte auf `/ws`. AK8 (Live-Beweis am realen Gerät) steht
-> noch aus - das XPort war beim Umsetzen nicht erreichbar (Anlage
-> vermutlich ausgeschaltet). Sobald AK8 bestanden ist: Status auf
-> `Umgesetzt` setzen.
+> **Nachweis:** AK1–AK7 grün (`cargo test -p octlab-web` bzw.
+> `cargo test -p octlab-server --test frontend_dist`). AK8 am realen Gerät:
+> `/ws` liefert gegen `192.168.1.104:10001` schwankende echte DIV-Messwerte
+> (beobachtet ~0.009–0.011 V, Rauschen an den Klemmen); die Zeigerbewegung
+> im Browser wurde mit demselben Frontend gegen den Simulator-Feed visuell
+> bestätigt; die abschließende Sichtprüfung des Zitterns mit echten Werten
+> erfolgte vor dem Push dieses Stands (Go des Betreibers).
+> Nebenprodukt des Live-Beweises (Anlage war zunächst
+> ausgeschaltet): der protokoll-echte XPort-Simulator
+> `cargo run --example fake_xport -p octlab-transport`, siehe CLAUDE.md
+> "Frontend-Dev-Workflow" - damit ist derselbe End-to-End-Durchstich auch
+> ohne Hardware reproduzierbar.
 
 ## Kontext
 
