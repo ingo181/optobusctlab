@@ -8,6 +8,9 @@
 # Schemas, kein Repo-Inhalt (siehe apps/desktop/build.rs).
 apps/*/gen/schemas/
 
+# Trunk-Build-Ausgabe des Leptos-Frontends (apps/web), reines Build-Artefakt.
+apps/web/dist/
+
 # ESDM-CLI-Binary (lokales Tool, kein Repo-Inhalt) - NICHT die Modelldateien.
 # Führender Slash bindet das an den Repo-Root, damit weder Unterverzeichnisse
 # noch *.esdm.yaml-Dateien versehentlich mitgetroffen werden.

@@ -20,6 +20,13 @@ allow = [
     # Kein Problem für dieses MIT-lizenzierte Projekt, das diese Crates nur
     # unverändert nutzt statt zu forken/verändert weiterzugeben.
     "MPL-2.0",
+    # BSL-1.0: Boost Software License (permissiv, OSI-approved, MIT-kompatibel -
+    # NICHT zu verwechseln mit der Business Source License BUSL-1.1). Kommt
+    # transitiv über leptos' server_fn → xxhash-rust (apps/web).
+    "BSL-1.0",
+    # CC0-1.0: Public-Domain-Widmung, voll permissiv. Kommt transitiv über
+    # leptos' wasm_split_macros → base16 (apps/web).
+    "CC0-1.0",
 ]
 confidence-threshold = 0.9
 # ISC, Unicode-DFS-2016 und Zlib werden aktuell von keiner Dependency genutzt -

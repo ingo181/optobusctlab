@@ -25,6 +25,12 @@ struct Cli {
     /// `--connection tcp` nötig (und dann auch erforderlich).
     #[arg(long, required_if_eq("connection", "tcp"))]
     addr: Option<String>,
+
+    /// Verzeichnis mit der Trunk-Build-Ausgabe des Frontends. Der Default
+    /// passt für `cargo run` aus dem Repo-Root, nachdem in `apps/web`
+    /// einmal `trunk build` gelaufen ist.
+    #[arg(long, default_value = "apps/web/dist")]
+    frontend_dist: std::path::PathBuf,
 }
 
 #[tokio::main]
@@ -33,7 +39,7 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    let app = match build_app(cli.connection, cli.addr).await {
+    let app = match build_app(cli.connection, cli.addr, cli.frontend_dist).await {
         Ok(app) => app,
         Err(err) => {
             eprintln!("{err}");

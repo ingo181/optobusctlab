@@ -1,0 +1,8 @@
+# Trunk-Konfiguration für den Dev-Loop (siehe CLAUDE.md, "Frontend-Dev-Workflow"):
+# `trunk serve` baut bei jedem Save neu und serviert auf :8080; alles unter
+# /ws wird an den parallel laufenden octlab-server auf :3000 durchgereicht,
+# damit dieselbe relative WebSocket-URL wie im Produktionsfall funktioniert.
+
+[[proxy]]
+ws = true
+backend = "http://localhost:3000/ws"

@@ -17,3 +17,9 @@ axum = { version = "0.7", features = ["ws"] }
 serde.workspace = true
 serde_json = "1"
 futures-util = "0.3"
+tower-http = { version = "0.6", features = ["fs"] }
+
+[dev-dependencies]
+# Nur für `ServiceExt::oneshot` in den Router-Tests (tests/frontend_dist.rs) -
+# tower ist über axum sowieso schon im Dependency-Baum.
+tower = { version = "0.5", features = ["util"] }

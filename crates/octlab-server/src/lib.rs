@@ -11,7 +11,8 @@ use axum::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         State,
     },
-    response::{Html, IntoResponse},
+    handler::HandlerWithoutStateExt,
+    response::IntoResponse,
     routing::get,
     Json, Router,
 };
@@ -19,8 +20,10 @@ use octlab_lab::Lab;
 use octlab_protocol::{ChannelKey, Message as LabMessage, ModuleAddress, SubChannel};
 use octlab_transport::{BoardConnection, SimulatedConnection, TcpConnection};
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tower_http::services::ServeDir;
 
 /// Wahl der Verbindungsebene beim Start. Default `Simulation` – sicher,
 /// läuft überall ohne angeschlossenes c't-Lab. `Tcp` ist bewusst nur
@@ -68,7 +71,11 @@ struct AppState {
 /// nur endlos timeouten würden. Aufrufer (`main.rs`, `apps/desktop`)
 /// entscheiden selbst, wie sie den Fehler melden (Prozess beenden vs.
 /// Tauri-Fehlerdialog).
-pub async fn build_app(connection: ConnectionKind, addr: Option<String>) -> Result<Router, String> {
+pub async fn build_app(
+    connection: ConnectionKind,
+    addr: Option<String>,
+    frontend_dist: PathBuf,
+) -> Result<Router, String> {
     let boxed_connection: Box<dyn BoardConnection> = match connection {
         ConnectionKind::Simulation => Box::new(SimulatedConnection::new("dev-simulation")),
         ConnectionKind::Tcp => {
@@ -93,19 +100,26 @@ pub async fn build_app(connection: ConnectionKind, addr: Option<String>) -> Resu
 
     let state = AppState { lab };
 
+    // Alles, was keine API-Route ist, kommt aus der Trunk-Build-Ausgabe von
+    // `apps/web` (`ServeDir` liefert für `/` automatisch die `index.html`).
+    // Fehlt das Verzeichnis bzw. die Datei, erklärt der Fallback die Abhilfe,
+    // statt kommentarlos 404 zu antworten - der häufigste Stolperer ist ein
+    // frisch geklontes Repo, in dem `trunk build` schlicht noch nie lief.
+    let frontend = ServeDir::new(frontend_dist).not_found_service(missing_frontend.into_service());
+
     Ok(Router::new()
-        .route("/", get(index))
         .route("/health", get(health))
         .route("/ws", get(ws_upgrade))
+        .fallback_service(frontend)
         .with_state(state))
 }
 
-// PROVISORIUM: statische Seite ohne Framework, nur zum Live-Beweis der
-// TcpConnection-Anbindung (jetzt auch für apps/desktop). Fliegt komplett
-// raus, sobald apps/web (Leptos) steht - siehe CLAUDE.md, Abschnitt
-// "Nächste Schritte".
-async fn index() -> Html<&'static str> {
-    Html(include_str!("../static/index.html"))
+async fn missing_frontend() -> impl IntoResponse {
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        "Frontend-Build nicht gefunden. Einmal `trunk build` in apps/web ausführen \
+         (bzw. --frontend-dist auf die Trunk-Ausgabe zeigen lassen).",
+    )
 }
 
 async fn health() -> Json<serde_json::Value> {

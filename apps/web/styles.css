@@ -1,0 +1,89 @@
+/* Bewusst handgeschriebenes Minimal-CSS für die eine Instrumenten-Seite.
+   Tailwind 4 kommt erst mit der ersten echten UI-Ausbaustufe (Spec 0002,
+   "außerhalb des Scopes"). Optik: helles Gerätepanel, LabVIEW als lose
+   Inspiration. */
+
+:root {
+  font-family: system-ui, sans-serif;
+  color: #1c1c22;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: #e4e6ea;
+}
+
+.panel {
+  text-align: center;
+}
+
+.panel h1 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #55555f;
+}
+
+.instrument {
+  margin: 0;
+  padding: 1.25rem 1.5rem 1rem;
+  width: min(26rem, 90vw);
+  background: #fafafa;
+  border: 1px solid #c6c8ce;
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px rgb(0 0 0 / 0.12), inset 0 1px 0 #fff;
+}
+
+.instrument svg {
+  width: 100%;
+  height: auto;
+}
+
+.gauge-arc {
+  fill: none;
+  stroke: #2a2a33;
+  stroke-width: 2;
+}
+
+.gauge-tick {
+  stroke: #2a2a33;
+  stroke-width: 1;
+}
+
+.gauge-tick.major {
+  stroke-width: 2;
+}
+
+.gauge-tick-label {
+  font-size: 10px;
+  fill: #55555f;
+}
+
+.gauge-needle {
+  stroke: #c62828;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  /* Zeiger gleitet zwischen zwei Messwerten, statt zu springen -
+     animiert wird der rotate()-Transform aus der Komponente. */
+  transition: transform 300ms ease-out;
+}
+
+.gauge-hub {
+  fill: #2a2a33;
+}
+
+.gauge-value {
+  margin: 0.25rem 0 0;
+  font-family: ui-monospace, monospace;
+  font-size: 1.4rem;
+}
+
+figcaption {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: #55555f;
+}

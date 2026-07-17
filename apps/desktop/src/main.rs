@@ -28,6 +28,17 @@ fn connection_from_env() -> (ConnectionKind, Option<String>) {
     (connection, addr)
 }
 
+/// Verzeichnis mit der Trunk-Build-Ausgabe von `apps/web`. Wie bei
+/// `--connection`: Env-Var statt CLI (`OCTLAB_FRONTEND_DIST`), Default passt
+/// für einen Start aus dem Repo-Root (`cargo run -p octlab-desktop`).
+/// Echtes Bundling (Frontend in die App eingebettet statt vom Dateisystem
+/// geladen) kommt erst mit CLAUDE.md-Schritt 8.
+fn frontend_dist_from_env() -> std::path::PathBuf {
+    std::env::var("OCTLAB_FRONTEND_DIST")
+        .unwrap_or_else(|_| "apps/web/dist".to_string())
+        .into()
+}
+
 fn main() {
     tracing_subscriber::fmt::init();
 
@@ -38,9 +49,12 @@ fn main() {
             // Fail-fast wie bei octlab-server selbst: synchron auf
             // build_app() warten, BEVOR ein Fenster entsteht, das sonst
             // gegen einen nie startenden Server liefe.
-            let app_router =
-                tauri::async_runtime::block_on(octlab_server::build_app(connection, addr))
-                    .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+            let app_router = tauri::async_runtime::block_on(octlab_server::build_app(
+                connection,
+                addr,
+                frontend_dist_from_env(),
+            ))
+            .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 
             let listener =
                 tauri::async_runtime::block_on(tokio::net::TcpListener::bind("127.0.0.1:3000"))?;

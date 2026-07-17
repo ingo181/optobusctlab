@@ -70,13 +70,49 @@ apps/
                      einer WebView. Aktuell noch Provisorium-Status, siehe
                      "Nächste Schritte" - zeigt nur das Architektur-Muster
                      (Server-Embedding + WebView), keine eigene UI.
-  web/              (noch nicht angelegt) Leptos-Frontend (WASM), löst das
-                     Wegwerf-HTML in octlab-server/static/ ab (Browser UND
-                     Tauri-WebView zeigen dann dasselbe gebündelte Frontend).
+  web/              Crate `octlab-web`: Leptos 0.8 CSR (WASM), gebaut mit
+                     Trunk (siehe "Frontend-Dev-Workflow" unten). Hält die
+                     per /ws gepushten Messwerte in einem RwSignal (letzter
+                     Wert pro Kanal gewinnt) und zeigt ein selbstgebautes
+                     SVG-Zeigerinstrument für DIV (Adresse 1, Subkanal 0).
+                     octlab-server serviert die Trunk-Ausgabe
+                     (`apps/web/dist`) als Fallback-Route - Browser UND
+                     Tauri-WebView zeigen dasselbe Frontend. Spec:
+                     `specs/0002-web-frontend-gauge.md`.
 ```
 
 Jede Schicht kennt nur die darunterliegende, nie umgekehrt. Neue Module folgen
 dem Muster in `octlab-devices/src/lib.rs` (siehe `Dds`-Struct).
+
+## Frontend-Dev-Workflow (apps/web)
+
+Zwei Betriebsarten, beide gegen denselben `octlab-server`:
+
+- **Täglicher Dev-Loop (empfohlen): `trunk serve`.** Terminal 1:
+  `cargo run -p octlab-server` (Simulation oder `--connection tcp ...`),
+  Terminal 2: `cd apps/web && trunk serve` → http://localhost:8080 mit
+  Auto-Rebuild bei jedem Save. `/ws` wird per Proxy (siehe
+  `apps/web/Trunk.toml`) an :3000 durchgereicht, die relative
+  WebSocket-URL im Client funktioniert dadurch in beiden Betriebsarten
+  unverändert.
+- **Integriert (Live-Beweis, Desktop, später Pi): `trunk build`.**
+  `cd apps/web && trunk build`, dann `cargo run -p octlab-server` vom
+  Repo-Root - der Server serviert `apps/web/dist` (Default von
+  `--frontend-dist`) als Fallback hinter den API-Routen. Fehlt das
+  Build-Verzeichnis, antwortet `/` mit einem Hinweis auf `trunk build`
+  statt kommentarlosem 404. `apps/desktop` nutzt denselben Mechanismus
+  (Env-Var `OCTLAB_FRONTEND_DIST`, Default `apps/web/dist` - Start aus dem
+  Repo-Root).
+
+Toolchain auf dem Host: `trunk` (0.21.x) + Rust-Target
+`wasm32-unknown-unknown`. Beides ist bewusst (noch) NICHT im Dev-Container -
+`cargo test --workspace` kompiliert `octlab-web` nativ (die reine Logik ist
+host-testbar), nur der WASM-Build selbst läuft auf dem Host. Leptos ist auf
+0.8 gepinnt (0.9 nur alpha); Erfahrungswerte aus dem opnCAQ-Projekt:
+`LocalResource` statt `Resource::new` für WASM-Futures, Thaw NICHT
+verwenden (0.4.x inkompatibel mit Leptos 0.8), Tailwind 4 als gesetzte
+Styling-Wahl sobald die UI über ein einzelnes Instrument hinauswächst
+(bis dahin handgeschriebenes `styles.css`, YAGNI).
 
 ## Wichtige Design-Entscheidungen (bitte nicht versehentlich rückgängig machen)
 
@@ -290,7 +326,11 @@ esdm lint domain.esdm.yaml
   check licenses` verlangt seit `apps/desktop` zusätzlich `MPL-2.0` in der
   Allow-Liste (`deny.toml`) - kommt transitiv über `wry`
   (`cssparser`/`selectors`/`dtoa-short`) und `dirs` (`option-ext`), weak/
-  dateibasiertes Copyleft, unproblematisch für dieses MIT-Projekt.
+  dateibasiertes Copyleft, unproblematisch für dieses MIT-Projekt. Seit
+  `apps/web` (Leptos) zusätzlich `BSL-1.0` (Boost Software License,
+  permissiv - NICHT die Business Source License; via `xxhash-rust`) und
+  `CC0-1.0` (Public Domain; via `base16`) in der Allow-Liste, beides vor
+  der Aufnahme per Wegwerf-Probe gegen `cargo deny` verifiziert.
 - **VS-Code-Extensions vordeklariert** in `devcontainer.json`
   (`customizations.vscode.extensions`): `rust-lang.rust-analyzer`,
   `tamasfe.even-better-toml`, `stevejpurves.cucumber` (Gherkin-Syntax für
@@ -355,20 +395,15 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    das NICHT als separater Preflight-Connect in `octlab-server` gelöst ist).
    Live gegen die reale Anlage verifiziert: `1:VAL 0?` liefert einen echten
    DIV-Messwert über `Lab::query()`.
-3. ~~Kompletter Hardware→Server→Browser-Durchstich~~ – **erledigt, aber
-   bewusst als Wegwerf-Provisorium**: `octlab-server` liefert unter `/` eine
-   einzelne statische HTML-Seite aus (`crates/octlab-server/static/index.html`,
-   `include_str!` eingebettet, kein Build-Schritt, kein Framework), deren
-   Inline-JS sich an `/ws` hängt und pro Adresse/Subkanal den letzten Wert in
-   einer Tabelle anzeigt. Damit überhaupt Werte fließen, pollt eine
-   Server-Task (`poll_div_provisional`, jetzt in `octlab-server/src/lib.rs`)
-   alle 500ms fest `1:VAL 0?` (DIV, Adresse 1, Subkanal 0) – nur aktiv bei
-   `--connection tcp`, für `simulation` bleibt die Seite statisch leer. Live
-   gegen die reale Anlage verifiziert: echte, tickende DIV-Messwerte im
-   Browser. **Fliegt komplett wieder raus** (Route, Datei, Poll-Task),
-   sobald `apps/web` (Leptos, siehe Schritt 7) eine echte
-   Subscription-/Sweep-Logik mitbringt – so markiert im Datei- und
-   Funktionskommentar.
+3. ~~Kompletter Hardware→Server→Browser-Durchstich~~ – **erledigt**; das
+   damalige Wegwerf-HTML (`crates/octlab-server/static/index.html` samt
+   `/`-Route) ist mit Spec 0002 wieder entfernt, `octlab-server` serviert
+   jetzt die Trunk-Ausgabe von `apps/web` (siehe "Frontend-Dev-Workflow").
+   Von dem Provisorium übrig ist nur noch der 500ms-Poll
+   (`poll_div_provisional` in `octlab-server/src/lib.rs`, sendet `1:0?`,
+   nur aktiv bei `--connection tcp`) – der bleibt der Taktgeber, bis eine
+   echte Subscription-/Sweep-Logik existiert, und fliegt dann raus (so im
+   Funktionskommentar markiert).
 4. ~~`apps/desktop` (Tauri): minimales Server-Embedding-Gerüst~~ –
    **erledigt, ebenfalls Provisorium**. `octlab-server` wurde dafür in
    `lib.rs` (Router-Aufbau, `pub async fn build_app()`) und `main.rs`
@@ -388,9 +423,10 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    ab) und `MPL-2.0` in `deny.toml` (siehe "Dev Container" oben). Läuft NUR
    nativ, nie im Dev-Container (siehe dort). Live gegen die reale Anlage
    verifiziert: natives Fenster ("octlab-desktop (Provisorium)"), echte
-   tickende DIV-Werte. **Fliegt komplett wieder raus** (bzw. wird umgebaut,
-   um `apps/web`s gebündeltes Frontend zu zeigen statt der Wegwerf-Seite),
-   sobald `apps/web` (Leptos, Schritt 7) steht.
+   tickende DIV-Werte. Seit Spec 0002 zeigt die WebView automatisch das
+   Leptos-Frontend (der eingebettete Server serviert `apps/web/dist`, Env-Var
+   `OCTLAB_FRONTEND_DIST`) – echtes Bundling/Einbetten des Frontends in die
+   App kommt mit Schritt 8.
 5. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
    IMMER gegen die aktuelle Syntax-Doku im Community-Forum
    (https://ctlabforum.thoralt.de) und/oder https://www.sn7400.de/ctlab/
@@ -400,15 +436,19 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
 6. Persistenz (SurrealDB embedded, `kv-rocksdb`) für Messreihen-Aufzeichnung –
    eigene Schicht, nicht in `octlab-lab` – Vorschlag: `octlab-recording`-Crate,
    die `lab.subscribe()` konsumiert und optional in SurrealDB schreibt.
-7. **Nächster aktiver Schritt.** `apps/web` (Leptos) – erst UI, wenn
-   Backend-Kern stabil ist (ist er: `octlab-server` läuft gegen echte
-   Hardware, beide Provisorien aus Schritt 3/4 beweisen die
-   Embedding-Architektur). Löst das Wegwerf-HTML in BEIDEN Anzeigen ab -
-   Browser (`octlab-server`s `/`-Route) UND Tauri-WebView (`apps/desktop`) -
-   dieselbe Leptos-App, einmal gebündelt.
-8. `apps/desktop` (Tauri) – Bundling/Installer/Icon-Feinschliff, sobald
-   `apps/web` das echte Frontend liefert. Das reine Server-Embedding+WebView-
-   Muster ist mit Schritt 4 bereits bewiesen.
+7. ~~`apps/web` (Leptos) – erste Ausbaustufe~~ – **erledigt** (Spec 0002):
+   Leptos-0.8-CSR-Crate `octlab-web`, WebSocket-Client auf `/ws`
+   (letzter Wert pro Kanal in einem RwSignal), selbstgebautes
+   SVG-Zeigerinstrument für DIV (Adresse 1, Subkanal 0), `octlab-server`
+   serviert die Trunk-Ausgabe statt des entfernten Wegwerf-HTML. Ersetzt
+   das Provisorium in BEIDEN Anzeigen (Browser und Tauri-WebView zeigen
+   dieselbe App). Weitere Instrumente/Module, Tailwind und
+   Subscription-Logik sind bewusst noch nicht drin (siehe Spec,
+   "außerhalb des Scopes").
+8. **Nächster aktiver Schritt.** `apps/desktop` (Tauri) –
+   Bundling/Installer/Icon-Feinschliff; dabei das Frontend in die App
+   einbetten statt zur Laufzeit von `apps/web/dist` zu laden. Das reine
+   Server-Embedding+WebView-Muster ist mit Schritt 4 bereits bewiesen.
 
 ## Backlog (kein aktiver Schritt, nur vorgemerkt)
 
