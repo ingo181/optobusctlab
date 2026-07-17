@@ -27,7 +27,7 @@ pub fn App() -> impl IntoView {
                 label="DIV – Adresse 1, Subkanal 0"
                 unit="V"
                 min=0.0
-                max=0.01
+                max=0.02
                 value=div_value
             />
         </main>

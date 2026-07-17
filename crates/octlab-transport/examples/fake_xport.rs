@@ -16,7 +16,8 @@
 //! hier allerdings im Backlog, statt wie der echte XPort abgewiesen zu
 //! werden), adressierte Kommandos ohne Echo. Antwortet auf `1:0?` (DIV,
 //! Adresse 1, Subkanal 0 - das echte Draht-Format aus `Command::to_wire()`)
-//! mit einem 20-Sekunden-Sinus über die Gauge-Skala 0..0.01 plus leichtem
+//! mit einem 20-Sekunden-Sinus über 0..0.01 (untere Gauge-Hälfte, die
+//! Skala reicht inzwischen bis 0.02) plus leichtem
 //! Rauschen, damit der Zeiger sichtbar wandert UND zittert wie am echten
 //! Gerät. Alle anderen Kommandos werden ignoriert, wie von einem Modul,
 //! das nicht antwortet (das ist die per ESDM modellierte
