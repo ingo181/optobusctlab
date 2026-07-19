@@ -12,11 +12,13 @@
 //! und Methoden, die `Command`- bzw. `ChannelKey`-Werte für die Query-Ebene
 //! in `octlab-lab` produzieren.
 //!
-//! HINWEIS: Die Subkanal-Zuordnung unten (FREQUENCY=0, LEVEL=1) ist aus dem
-//! c't-Artikel "DDS-Funktionsgenerator-Modul" abgeleitet, aber gegen die
-//! aktuelle Syntax-Doku (siehe oben) zu verifizieren, bevor du gegen echte
-//! Hardware sendest – Firmware-Updates haben die Zuordnung laut
-//! Originaldokumentation gelegentlich verschoben.
+//! HINWEIS Verifikationsstand (Spec 0003, 2026-07-19, real gegen FW 3.71):
+//! FREQUENCY=0 ist am echten DDS verifiziert (lesen, setzen mit Quittung
+//! auf Subkanal 255, rücklesen - `cargo run --example dds_probe -p
+//! octlab-transport`). LEVEL=1 stammt weiterhin nur aus dem c't-Artikel
+//! "DDS-Funktionsgenerator-Modul" und ist VOR dem ersten Schreibzugriff
+//! gegen die aktuelle Syntax-Doku (siehe oben) bzw. am Gerät zu
+//! verifizieren - Firmware-Updates haben Subkanäle gelegentlich verschoben.
 
 use octlab_protocol::{ChannelKey, Command, ModuleAddress, SubChannel};
 
