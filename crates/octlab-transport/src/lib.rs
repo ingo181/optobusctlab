@@ -60,22 +60,51 @@ pub trait BoardConnection: Send + Sync {
 /// mitgeloggt, damit man in Tests assertieren kann, was tatsächlich gesendet wurde.
 pub struct SimulatedConnection {
     name: String,
-    pub sent: Vec<String>,
+    /// Sende-Log als `Arc<Mutex<...>>` statt `Vec` direkt: die Connection
+    /// wird per `Box<dyn BoardConnection>` in den Lab-Actor MOVED (Ownership
+    /// wandert komplett dorthin, der Test behält nichts zurück). Ein Test,
+    /// der hinterher prüfen will, was gesendet wurde, braucht deshalb einen
+    /// zweiten Besitzer desselben Logs - genau das ist `Arc` (geteilte
+    /// Ownership per Referenzzählung), `Mutex` macht die Schreibzugriffe
+    /// des Actors und die Lesezugriffe des Tests gegeneinander sicher.
+    /// Handle vor dem `Lab::spawn()` per [`Self::sent_handle`] ziehen.
+    sent: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pub queued_responses: std::collections::VecDeque<RawLine>,
+    /// Antworten, die erst beim jeweils NÄCHSTEN `send_line()` in die
+    /// Empfangs-Warteschlange rücken - im Gegensatz zu `queued_responses`,
+    /// die sofort abrufbar sind (unaufgeforderte Nachrichten). Bildet
+    /// Request/Response-Sequenzen ab (z.B. Set → Quittung, Query →
+    /// Messwert), bei denen die Antwort erst NACH dem zugehörigen Kommando
+    /// eintreffen darf.
+    scripted_replies: std::collections::VecDeque<RawLine>,
 }
 
 impl SimulatedConnection {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            sent: Vec::new(),
+            sent: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             queued_responses: std::collections::VecDeque::new(),
+            scripted_replies: std::collections::VecDeque::new(),
         }
     }
 
     /// Legt eine Antwort in die Warteschlange, die beim nächsten `recv_line()` geliefert wird.
     pub fn push_response(&mut self, line: impl Into<String>) {
         self.queued_responses.push_back(line.into());
+    }
+
+    /// Legt eine Antwort bereit, die erst durch das nächste `send_line()`
+    /// "ausgelöst" wird (ein gesendetes Kommando gibt genau eine
+    /// Skript-Antwort frei, in FIFO-Reihenfolge).
+    pub fn push_reply(&mut self, line: impl Into<String>) {
+        self.scripted_replies.push_back(line.into());
+    }
+
+    /// Zweites Handle auf das Sende-Log - VOR dem `Lab::spawn()` ziehen,
+    /// danach ist die Connection weg (siehe Feld-Kommentar an `sent`).
+    pub fn sent_handle(&self) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+        self.sent.clone()
     }
 }
 
@@ -90,7 +119,12 @@ impl BoardConnection for SimulatedConnection {
     }
 
     async fn send_line(&mut self, line: &str) -> Result<(), TransportError> {
-        self.sent.push(line.to_string());
+        self.sent.lock().unwrap().push(line.to_string());
+        // Ein gesendetes Kommando gibt die nächste Skript-Antwort frei
+        // (falls vorhanden) - siehe Doc-Kommentar an `push_reply`.
+        if let Some(reply) = self.scripted_replies.pop_front() {
+            self.queued_responses.push_back(reply);
+        }
         Ok(())
     }
 
@@ -194,10 +228,29 @@ mod tests {
         conn.push_response("#0:0=1.23456");
 
         conn.send_line("0:VAL 0?").await.unwrap();
-        assert_eq!(conn.sent, vec!["0:VAL 0?"]);
+        assert_eq!(*conn.sent_handle().lock().unwrap(), vec!["0:VAL 0?"]);
 
         let reply = conn.recv_line().await.unwrap();
         assert_eq!(reply, "#0:0=1.23456");
+    }
+
+    #[tokio::test]
+    async fn scripted_reply_wird_erst_durch_send_freigegeben() {
+        let mut conn = SimulatedConnection::new("test-channel");
+        conn.push_reply("#4:255=0 [OK]");
+        conn.push_reply("#4:0=2500.0");
+
+        // Vor dem ersten Send darf recv_line() NICHT liefern (pending) -
+        // prüfbar über ein kurzes Timeout.
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_millis(20), conn.recv_line()).await;
+        assert!(pending.is_err(), "Antwort kam vor dem zugehörigen Kommando");
+
+        conn.send_line("4:0=2500!").await.unwrap();
+        assert_eq!(conn.recv_line().await.unwrap(), "#4:255=0 [OK]");
+
+        conn.send_line("4:0?").await.unwrap();
+        assert_eq!(conn.recv_line().await.unwrap(), "#4:0=2500.0");
     }
 
     // TcpConnection: siehe specs/0001-tcp-connection.md AK1-AK6. Jeder Test
