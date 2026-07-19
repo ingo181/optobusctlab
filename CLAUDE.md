@@ -74,7 +74,11 @@ apps/
                      Trunk (siehe "Frontend-Dev-Workflow" unten). Hält die
                      per /ws gepushten Messwerte in einem RwSignal (letzter
                      Wert pro Kanal gewinnt) und zeigt ein selbstgebautes
-                     SVG-Zeigerinstrument für DIV (Adresse 1, Subkanal 0).
+                     SVG-Zeigerinstrument für DIV (Adresse 1, Subkanal 0)
+                     plus ein Bedienfeld für die DDS-Frequenz (Adresse 4,
+                     Subkanal 0; Setzen via `POST /api/channel/{addr}/{sub}`,
+                     zeigt NUR die zurückgelesene Frequenz, nie den
+                     Wunschwert - Spec `specs/0003-dds-frequenz-setzen.md`).
                      octlab-server serviert die Trunk-Ausgabe
                      (`apps/web/dist`) als Fallback-Route - Browser UND
                      Tauri-WebView zeigen dasselbe Frontend. Spec:
@@ -91,15 +95,16 @@ Zwei Betriebsarten, beide gegen denselben `octlab-server`:
 - **Täglicher Dev-Loop (empfohlen): `trunk serve`.** Terminal 1:
   `cargo run -p octlab-server` (Simulation oder `--connection tcp ...`),
   Terminal 2: `cd apps/web && trunk serve` → http://localhost:8080 mit
-  Auto-Rebuild bei jedem Save. `/ws` wird per Proxy (siehe
-  `apps/web/Trunk.toml`) an :3000 durchgereicht, die relative
-  WebSocket-URL im Client funktioniert dadurch in beiden Betriebsarten
-  unverändert.
+  Auto-Rebuild bei jedem Save. `/ws` UND `/api` werden per Proxy (siehe
+  `apps/web/Trunk.toml`) an :3000 durchgereicht, die relativen URLs im
+  Client funktionieren dadurch in beiden Betriebsarten unverändert.
 - **Ohne eingeschaltete Anlage: `cargo run --example fake_xport -p
   octlab-transport`** startet einen protokoll-echten XPort-Simulator
   (rohes TCP, CR/LF, antwortet auf das echte Draht-Format `1:0?` mit
   Sinus + Rauschen über die Gauge-Skala; Adresse als Argument, Default
-  `127.0.0.1:15001`). Server dagegen mit `--connection tcp --addr
+  `127.0.0.1:15001`; Setz-Kommandos beantwortet er NICHT - das
+  Frequenz-Bedienfeld zeigt dagegen also erwartungsgemäß "keine
+  Antwort", kein Bug). Server dagegen mit `--connection tcp --addr
   127.0.0.1:15001` - damit läuft der komplette echte Stack (TcpConnection →
   Protokoll → Lab-Actor → WebSocket → Frontend), nur die Hardware ist
   simuliert. Läuft überall, wo cargo läuft, auch im Dev-Container; keine
@@ -184,7 +189,7 @@ ist keine Aggregat-Tatsache, sondern eine technische Eigenschaft der
 Lab-Actor-API (dort gibt es auf Aggregat-Ebene ohnehin keinen Query-Command).
 
 **Status Cucumber-Tests:** grün (`cargo test -p octlab-lab --test cucumber`,
-2 Features, 3 Szenarien, 11 Steps). `cucumber` 0.21 verlangt
+4 Features, 8 Szenarien, 32 Steps). `cucumber` 0.21 verlangt
 `#[derive(cucumber::World)]` statt eines von Hand geschriebenen
 `impl World for LabWorld` (das ältere `#[derive(WorldInit)]`-Muster wurde
 in 0.21 ersetzt) - der `LabWorld`-Struct trägt das Derive jetzt.
@@ -247,6 +252,25 @@ Original-Artikeln gilt das hier.
   `specs/0001-tcp-connection.md`, AK5) hat trotzdem korrekt rekonstruiert.
   Bestätigt: das ist kein theoretisches Edge-Case-Szenario, sondern normales
   Verhalten dieser Hardware/dieses XPorts.
+- **DDS (Adresse 4, FW 3.71): Subkanal 0 = Frequenz in Hz – verifiziert**
+  (Spec 0003, Diagnose-Tool: `cargo run --example dds_probe -p
+  octlab-transport`, liest/setzt/liest zurück und stellt den Originalwert
+  wieder her). Ein Set-Kommando mit `!` wird unaufgefordert auf Subkanal
+  255 quittiert (`#4:255=0 [OK]`, Fehler z.B. `#4:255=5 [PARERR]`).
+  **PARERR heißt NICHT "Wert unverändert":** übergroße Werte klemmt die
+  Firmware auf das Maximum 999999.8 Hz, negative auf 0 – jeweils MIT
+  Fehlerquittung; nur Rücklesen zeigt den Ist-Zustand. Rücklesen
+  formatiert mit einer Nachkommastelle (`4:0=1234.5678!` → `#4:0=1234.5`)
+  → Toleranz für den Wunsch/Ist-Vergleich absolut 0.1 Hz, NICHT relativ
+  (Herleitung in `specs/0003-dds-frequenz-setzen.md`). LEVEL=Subkanal 1
+  ist weiterhin UNverifiziert (nur 2007er-Artikel).
+  **Konsequenz für ALLE künftigen Stellglieder (DCG-Spannung etc.): Die
+  Quittung bestätigt nur die Annahme des Kommandos, NIE den eingestellten
+  Wert - verbindlich ist ausschließlich das Rücklesen** (Muster
+  Setzen → Quittung → Rücklesen, wie in `POST /api/channel/{addr}/{sub}`
+  umgesetzt). NICHT verwechseln: gültige Setzversuche bleiben nicht etwa
+  stumm, auch sie werden quittiert (`#4:255=0 [OK]`) - aber eben nur das
+  Kommando, nicht der Wert.
 
 ## Dev Container (Podman)
 
@@ -455,7 +479,15 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    dieselbe App). Weitere Instrumente/Module, Tailwind und
    Subscription-Logik sind bewusst noch nicht drin (siehe Spec,
    "außerhalb des Scopes").
-8. **Nächster aktiver Schritt.** `apps/desktop` (Tauri) –
+8. ~~DDS-Frequenz aus der UI setzen (erster schreibender
+   Hardware-Zugriff)~~ – **erledigt** (Spec 0003): `Lab::set()` (Quittung
+   auf Subkanal 255, dreiwertiges `SetOutcome`), generischer Endpoint
+   `POST /api/channel/{addr}/{sub}` (Setzen → Quittung → Rücklesen),
+   Frequenz-Bedienfeld in `apps/web` neben dem Gauge. Subkanal-Zuordnung
+   und Fehlerverhalten vorab am realen Gerät verifiziert (siehe
+   "Verifizierte Hardware-Fakten": Klemmung trotz PARERR, Toleranz
+   0.1 Hz absolut). Live gegen die reale Anlage bewiesen.
+9. **Nächster aktiver Schritt.** `apps/desktop` (Tauri) –
    Bundling/Installer/Icon-Feinschliff; dabei das Frontend in die App
    einbetten statt zur Laufzeit von `apps/web/dist` zu laden. Das reine
    Server-Embedding+WebView-Muster ist mit Schritt 4 bereits bewiesen.
