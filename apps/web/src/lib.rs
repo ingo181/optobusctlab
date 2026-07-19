@@ -5,7 +5,9 @@
 //! Logik (Messwert-Zustand, Gauge-Winkel) ist von Browser-APIs getrennt und
 //! läuft als normale Host-Tests - siehe `specs/0002-web-frontend-gauge.md`.
 
+pub mod api;
 pub mod app;
+pub mod frequency;
 pub mod gauge;
 pub mod measurements;
 pub mod ws;

@@ -9,9 +9,23 @@ leptos = { version = "0.8", features = ["csr"] }
 serde = { workspace = true }
 serde_json = "1"
 wasm-bindgen = "0.2"
-# Nur die web-sys-Features, die der WebSocket-Client wirklich anfasst -
-# web-sys ist feature-gesplittet, jedes Feature schaltet Bindings frei.
-web-sys = { version = "0.3", features = ["WebSocket", "MessageEvent", "Window", "Location"] }
+# Nur die web-sys-Features, die WebSocket-Client (ws.rs) und fetch-Aufrufe
+# (api.rs) wirklich anfassen - web-sys ist feature-gesplittet, jedes Feature
+# schaltet Bindings frei.
+web-sys = { version = "0.3", features = [
+    "WebSocket",
+    "MessageEvent",
+    "Window",
+    "Location",
+    "Request",
+    "RequestInit",
+    "Response",
+    "Headers",
+] }
+# Promise → Future-Brücke für fetch (api.rs). Kommt über Leptos sowieso
+# schon transitiv in den Dependency-Baum, hier nur als direkte Dependency
+# deklariert (MIT/Apache-2.0, bereits von der deny-Allow-Liste abgedeckt).
+wasm-bindgen-futures = "0.4"
 # Panics im WASM landen sonst als nichtssagendes "unreachable executed" in
 # der Browser-Konsole - der Hook übersetzt sie in lesbare Rust-Panic-Messages.
 console_error_panic_hook = "0.1"

@@ -6,3 +6,8 @@
 [[proxy]]
 ws = true
 backend = "http://localhost:3000/ws"
+
+# Setz-Requests (Spec 0003) laufen im Dev-Loop über denselben Proxy-Trick
+# wie /ws: relative URL im Client, Trunk reicht an :3000 durch.
+[[proxy]]
+backend = "http://localhost:3000/api/"

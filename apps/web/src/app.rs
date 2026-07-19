@@ -12,6 +12,11 @@ use std::f64::consts::PI;
 /// "außerhalb des Scopes").
 const DIV_CHANNEL: ChannelId = (1, 0);
 
+/// Erstes Stellglied (Spec 0003): DDS-Frequenz, Adresse 4, Subkanal 0 -
+/// am realen Gerät gegen FW 3.71 verifiziert (siehe Spec-Kontext).
+const DDS_ADDRESS: u8 = 4;
+const DDS_FREQUENCY_SUBCHANNEL: u8 = 0;
+
 #[component]
 pub fn App() -> impl IntoView {
     let measurements = RwSignal::new(HashMap::<ChannelId, Measurement>::new());
@@ -30,7 +35,83 @@ pub fn App() -> impl IntoView {
                 max=0.02
                 value=div_value
             />
+            <FrequencyControl />
         </main>
+    }
+}
+
+/// Bedienfeld für die DDS-Frequenz (Spec 0003, AK6-AK8): Eingabefeld +
+/// Setzen-Button, zeigt die zuletzt per Rücklesen BESTÄTIGTE Frequenz -
+/// nie den Wunschwert (Klemm-Verhalten der Firmware, siehe Spec).
+#[component]
+fn FrequencyControl() -> impl IntoView {
+    use crate::frequency::{apply_set_response, parse_frequency_input, FrequencyPanel};
+
+    let input = RwSignal::new(String::new());
+    let panel = RwSignal::new(FrequencyPanel::default());
+    let invalid_input = RwSignal::new(false);
+    // Verhindert überlappende Requests: das Modul quittiert auf einem
+    // geteilten Statuskanal, gleichzeitige Setz-Vorgänge würden sich die
+    // Quittung streitig machen (siehe Doc-Kommentar an `Lab::set`).
+    let busy = RwSignal::new(false);
+
+    let on_set = move |_| {
+        match parse_frequency_input(&input.get()) {
+            // AK8: keine Zahl -> kein Request, nur Kennzeichnung
+            None => invalid_input.set(true),
+            Some(hz) => {
+                invalid_input.set(false);
+                busy.set(true);
+                // spawn_local statt .await im Handler: Event-Callbacks sind
+                // synchron, die HTTP-Antwort kommt später - die Future wird
+                // deshalb an den Browser-Scheduler übergeben und schreibt
+                // ihr Ergebnis reaktiv ins Signal.
+                leptos::task::spawn_local(async move {
+                    match crate::api::post_set_channel(DDS_ADDRESS, DDS_FREQUENCY_SUBCHANNEL, hz)
+                        .await
+                    {
+                        Ok((http_ok, body)) => {
+                            panel.update(|p| apply_set_response(p, hz, http_ok, &body));
+                        }
+                        Err(message) => panel.update(|p| p.note_failure(&message)),
+                    }
+                    busy.set(false);
+                });
+            }
+        }
+    };
+
+    let confirmed_text = move || match panel.get().confirmed_hz {
+        Some(hz) => format!("Bestätigt: {hz} Hz"),
+        None => "— noch nichts gesetzt —".to_string(),
+    };
+    let input_class = move || {
+        if invalid_input.get() {
+            "frequency-input invalid"
+        } else {
+            "frequency-input"
+        }
+    };
+
+    view! {
+        <section class="frequency-control">
+            <div class="frequency-row">
+                <input
+                    class=input_class
+                    type="text"
+                    inputmode="decimal"
+                    placeholder="Frequenz in Hz"
+                    prop:value=input
+                    on:input=move |ev| input.set(event_target_value(&ev))
+                />
+                <button on:click=on_set disabled=busy>"Setzen"</button>
+            </div>
+            <p class="frequency-confirmed">{confirmed_text}</p>
+            {move || {
+                panel.get().notice.map(|notice| view! { <p class="frequency-notice">{notice}</p> })
+            }}
+            <p class="frequency-caption">"DDS-Frequenz – Adresse 4, Subkanal 0"</p>
+        </section>
     }
 }
 
