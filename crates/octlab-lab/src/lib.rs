@@ -24,7 +24,7 @@
 //! empfangene Nachrichten verteilt sie über `broadcast` wieder raus. Das
 //! bildet die reale Hardware-Topologie 1:1 ab, statt sie zu verstecken.
 
-use octlab_protocol::{parse_message, ChannelKey, Command, Message};
+use octlab_protocol::{parse_message, ChannelKey, Command, Message, STATUS_SUBCHANNEL};
 use octlab_transport::{BoardConnection, TransportError};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -35,6 +35,28 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 /// Wert wie im JLab-Original übernommen (siehe JLab1.doc, Abschnitt
 /// "Synchron/Asynchron").
 const QUERY_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Ergebnis eines quittierten Setz-Vorgangs ([`Lab::set`]).
+///
+/// Bewusst drei unterscheidbare Fälle statt `Option`/`bool` (Spec 0003,
+/// AK1-AK3): Am realen Gerät verifiziert bedeutet eine Fehlerquittung
+/// (`PARERR`) NICHT, dass der Wert unverändert blieb - die Firmware klemmt
+/// z.B. übergroße Werte und quittiert trotzdem mit Fehler. Der Aufrufer
+/// muss deshalb Ablehnung und Nicht-Antwort getrennt behandeln können und
+/// den tatsächlichen Zustand per Rücklesen ermitteln.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetOutcome {
+    /// Quittung mit Code 0 eingetroffen (`#<addr>:255=0 [OK]`).
+    Confirmed { status_text: Option<String> },
+    /// Quittung mit Code != 0 eingetroffen (z.B. `#<addr>:255=5 [PARERR]`).
+    Rejected {
+        code: f64,
+        status_text: Option<String>,
+    },
+    /// Keine Quittung innerhalb des Timeouts - dritter Fall neben Erfolg
+    /// und Ablehnung, analog zur `Option<f64>`-Entscheidung bei `query()`.
+    NoReply,
+}
 
 pub struct Lab {
     outgoing: mpsc::UnboundedSender<String>,
@@ -157,6 +179,54 @@ impl Lab {
             _ => {
                 self.pending.lock().unwrap().remove(&key);
                 None
+            }
+        }
+    }
+
+    /// Setzt einen Kanalwert und wartet auf die Quittung des Moduls.
+    /// Siehe [`SetOutcome`] und Spec 0003.
+    ///
+    /// Die Quittung kommt NICHT auf dem gesetzten Kanal zurück, sondern
+    /// unaufgefordert auf dem Statuskanal 255 des Moduls (am realen Gerät
+    /// verifiziert: `4:0=1234.5!` → `#4:255=0 [OK]`) - deshalb registriert
+    /// sich diese Methode in der Pending-Map unter `(Adresse, 255)`,
+    /// nicht unter dem Ziel-Key. Konsequenz: Zwei gleichzeitige `set()`s
+    /// auf DASSELBE Modul würden sich die Quittung streitig machen
+    /// (der zweite `insert` verdrängt den ersten Warteplatz) - für diese
+    /// Ausbaustufe akzeptiert, siehe Spec 0003 "außerhalb des Scopes".
+    pub async fn set(&self, key: ChannelKey, value: f64) -> SetOutcome {
+        let ack_key = ChannelKey {
+            address: key.address,
+            subchannel: STATUS_SUBCHANNEL,
+        };
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(ack_key, tx);
+
+        if self
+            .outgoing
+            .send(Command::SetFloat(key, value).to_wire())
+            .is_err()
+        {
+            self.pending.lock().unwrap().remove(&ack_key);
+            return SetOutcome::NoReply;
+        }
+
+        match tokio::time::timeout(QUERY_TIMEOUT, rx).await {
+            // Quittungs-Code 0 = angenommen, alles andere ist eine
+            // Ablehnung (real beobachtet: 5 [PARERR]). ACHTUNG: Ablehnung
+            // heißt nicht "unverändert" - die Firmware klemmt Werte und
+            // quittiert trotzdem mit Fehler; den Ist-Zustand liefert nur
+            // ein anschließendes `query()`.
+            Ok(Ok(ack)) if ack.value == 0.0 => SetOutcome::Confirmed {
+                status_text: ack.status_text,
+            },
+            Ok(Ok(ack)) => SetOutcome::Rejected {
+                code: ack.value,
+                status_text: ack.status_text,
+            },
+            _ => {
+                self.pending.lock().unwrap().remove(&ack_key);
+                SetOutcome::NoReply
             }
         }
     }

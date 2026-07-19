@@ -23,9 +23,10 @@
 //! Race-Betrachtung oben transparent wie ein normaler synchroner Aufruf.
 
 use cucumber::{given, then, when, World};
-use octlab_lab::Lab;
+use octlab_lab::{Lab, SetOutcome};
 use octlab_protocol::{ChannelKey, ModuleAddress, SubChannel};
 use octlab_transport::SimulatedConnection;
+use std::sync::{Arc, Mutex};
 
 // cucumber 0.21 ersetzt das ältere `#[derive(WorldInit)]` + handgeschriebenes
 // `impl World` durch `#[derive(World)]`, das `impl World` (Konstruktion via
@@ -36,8 +37,14 @@ struct LabWorld {
     /// `Some` bis `ensure_spawned()` sie in den Actor überführt.
     connection: Option<SimulatedConnection>,
     lab: Option<Lab>,
+    /// Zweites Handle auf das Sende-Log der Connection - MUSS vor dem
+    /// `Lab::spawn()` gezogen werden, weil die Connection dabei komplett in
+    /// den Actor wandert (siehe Doc-Kommentar an
+    /// `SimulatedConnection::sent_handle`).
+    sent_log: Arc<Mutex<Vec<String>>>,
     last_query_result: Option<Option<f64>>,
     last_broadcast_value: Option<f64>,
+    last_set_outcome: Option<SetOutcome>,
 }
 
 impl std::fmt::Debug for LabWorld {
@@ -45,17 +52,22 @@ impl std::fmt::Debug for LabWorld {
         f.debug_struct("LabWorld")
             .field("last_query_result", &self.last_query_result)
             .field("last_broadcast_value", &self.last_broadcast_value)
+            .field("last_set_outcome", &self.last_set_outcome)
             .finish()
     }
 }
 
 impl Default for LabWorld {
     fn default() -> Self {
+        let connection = SimulatedConnection::new("cucumber-sim");
+        let sent_log = connection.sent_handle();
         Self {
-            connection: Some(SimulatedConnection::new("cucumber-sim")),
+            connection: Some(connection),
             lab: None,
+            sent_log,
             last_query_result: None,
             last_broadcast_value: None,
+            last_set_outcome: None,
         }
     }
 }
@@ -124,6 +136,29 @@ async fn when_query(world: &mut LabWorld, subchannel: u8, address: u8) {
     world.last_query_result = Some(result);
 }
 
+#[given(expr = "das Modul quittiert das nächste Kommando mit {string}")]
+fn given_scripted_ack(world: &mut LabWorld, reply: String) {
+    // push_reply statt push_response: die Quittung darf erst NACH dem
+    // zugehörigen Set-Kommando eintreffen (Request/Response-Sequenz),
+    // nicht schon beim Start des Actors abrufbar sein.
+    world
+        .connection
+        .as_mut()
+        .expect("Connection schon gespawnt - Given-Schritte müssen vor dem ersten When kommen")
+        .push_reply(reply);
+}
+
+#[when(expr = "ich Subkanal {int} an Adresse {int} auf den Wert {float} setze")]
+async fn when_set(world: &mut LabWorld, subchannel: u8, address: u8, value: f64) {
+    ensure_spawned(world).await;
+    let key = ChannelKey {
+        address: ModuleAddress(address),
+        subchannel: SubChannel(subchannel),
+    };
+    let outcome = world.lab.as_ref().unwrap().set(key, value).await;
+    world.last_set_outcome = Some(outcome);
+}
+
 #[when(expr = "ich die Live-Updates des Labs abonniere")]
 async fn when_subscribe(world: &mut LabWorld) {
     ensure_spawned(world).await;
@@ -158,6 +193,46 @@ fn then_timeout(world: &mut LabWorld) {
 #[then(expr = "empfange ich einen Wert von {float}")]
 fn then_broadcast_value(world: &mut LabWorld, expected: f64) {
     assert_eq!(world.last_broadcast_value, Some(expected));
+}
+
+#[then(expr = "wurde das Kommando {string} gesendet")]
+fn then_command_sent(world: &mut LabWorld, expected: String) {
+    let sent = world.sent_log.lock().unwrap();
+    assert!(
+        sent.contains(&expected),
+        "Kommando {expected:?} nicht im Sende-Log, gesendet wurde: {sent:?}"
+    );
+}
+
+#[then(expr = "meldet das Setzen Erfolg mit Status {string}")]
+fn then_set_confirmed(world: &mut LabWorld, expected_status: String) {
+    assert_eq!(
+        world.last_set_outcome,
+        Some(SetOutcome::Confirmed {
+            status_text: Some(expected_status.clone())
+        }),
+        "erwartete Confirmed({expected_status:?}), Setzen lieferte {:?}",
+        world.last_set_outcome
+    );
+}
+
+#[then(expr = "meldet das Setzen Ablehnung mit Status {string}")]
+fn then_set_rejected(world: &mut LabWorld, expected_status: String) {
+    match &world.last_set_outcome {
+        Some(SetOutcome::Rejected { status_text, .. })
+            if status_text.as_deref() == Some(expected_status.as_str()) => {}
+        other => panic!("erwartete Rejected({expected_status:?}), Setzen lieferte {other:?}"),
+    }
+}
+
+#[then(expr = "meldet das Setzen keine Antwort")]
+fn then_set_no_reply(world: &mut LabWorld) {
+    assert_eq!(
+        world.last_set_outcome,
+        Some(SetOutcome::NoReply),
+        "erwartete NoReply, Setzen lieferte {:?}",
+        world.last_set_outcome
+    );
 }
 
 #[tokio::main(flavor = "current_thread")]
