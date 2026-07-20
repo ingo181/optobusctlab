@@ -97,6 +97,41 @@ pub async fn build_app(
     Ok(build_router(lab, frontend_dist))
 }
 
+/// Wie [`build_app`], aber ohne Frontend-Fallback - für Aufrufer, die die
+/// Frontend-Auslieferung selbst bestimmen (Spec 0004: `apps/desktop`
+/// bettet die Trunk-Build-Ausgabe zur Compile-Zeit per `rust-embed` in SEIN
+/// EIGENES Binary ein und hängt dafür einen eigenen `.fallback(...)` an den
+/// zurückgegebenen Router). Bewusst NICHT als Cargo-Feature in diesem Crate
+/// gelöst (erster Versuch, verworfen): ein Feature, das bestehendes
+/// Verhalten ERSETZT statt rein additiv zu erweitern, wird von Cargos
+/// Feature-Unification über den gesamten Workspace hinweg unifiziert -
+/// `cargo test --workspace` hätte `octlab-server`s EIGENE Tests unbemerkt
+/// mit dem von `apps/desktop` gewünschten Feature kompiliert (weil beide im
+/// selben Build-Graph landen), und genau das brach `frontend_dist.rs`
+/// (ServeDir-Tests liefen plötzlich gegen eingebettete statt Platten-Inhalte).
+/// Deshalb bleibt `rust-embed` eine reine `apps/desktop`-Abhängigkeit, dieser
+/// Crate liefert nur den unfertigen Router.
+pub async fn build_app_without_frontend(
+    connection: ConnectionKind,
+    addr: Option<String>,
+) -> Result<Router, String> {
+    let boxed_connection: Box<dyn BoardConnection> = match connection {
+        ConnectionKind::Simulation => Box::new(SimulatedConnection::new("dev-simulation")),
+        ConnectionKind::Tcp => {
+            let addr = addr.ok_or_else(|| "--addr ist bei --connection tcp Pflicht".to_string())?;
+            Box::new(TcpConnection::new(addr))
+        }
+    };
+
+    let lab = spawn_lab(boxed_connection).await?;
+
+    if connection == ConnectionKind::Tcp {
+        tokio::spawn(poll_div_provisional(lab.clone()));
+    }
+
+    Ok(api_router(lab))
+}
+
 /// Wie [`build_app`], aber mit einer bereits fertig präparierten Verbindung
 /// statt der `ConnectionKind`-Auswahl - für Tests, die eine
 /// `SimulatedConnection` mit Skript-Antworten (`push_reply`) hineingeben
@@ -117,22 +152,27 @@ async fn spawn_lab(connection: Box<dyn BoardConnection>) -> Result<Arc<Lab>, Str
     }
 }
 
-fn build_router(lab: Arc<Lab>, frontend_dist: PathBuf) -> Router {
+/// Health/WS/API-Routen ohne Frontend-Fallback - gemeinsame Basis für
+/// [`build_router`] (ServeDir-Fallback) und [`build_app_without_frontend`]
+/// (Fallback bleibt Sache des Aufrufers).
+fn api_router(lab: Arc<Lab>) -> Router {
     let state = AppState { lab };
 
+    Router::new()
+        .route("/health", get(health))
+        .route("/ws", get(ws_upgrade))
+        .route("/api/channel/:addr/:sub", post(set_channel))
+        .with_state(state)
+}
+
+fn build_router(lab: Arc<Lab>, frontend_dist: PathBuf) -> Router {
     // Alles, was keine API-Route ist, kommt aus der Trunk-Build-Ausgabe von
     // `apps/web` (`ServeDir` liefert für `/` automatisch die `index.html`).
     // Fehlt das Verzeichnis bzw. die Datei, erklärt der Fallback die Abhilfe,
     // statt kommentarlos 404 zu antworten - der häufigste Stolperer ist ein
     // frisch geklontes Repo, in dem `trunk build` schlicht noch nie lief.
     let frontend = ServeDir::new(frontend_dist).not_found_service(missing_frontend.into_service());
-
-    Router::new()
-        .route("/health", get(health))
-        .route("/ws", get(ws_upgrade))
-        .route("/api/channel/:addr/:sub", post(set_channel))
-        .fallback_service(frontend)
-        .with_state(state)
+    api_router(lab).fallback_service(frontend)
 }
 
 /// Request-Body für `POST /api/channel/{addr}/{sub}`.

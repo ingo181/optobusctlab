@@ -1,23 +1,66 @@
-//! Minimales Tauri-Gerüst: startet `octlab-server` intern (als Tokio-Task
-//! im selben Prozess, kein Kindprozess) und öffnet ein natives WebView-
-//! Fenster auf dessen `/` - dieselbe Wegwerf-HTML-Seite wie beim
-//! eigenständigen `octlab-server`-Prozess (siehe dort, `static/index.html`).
+//! Tauri-Gerüst: startet `octlab-server`s API (Health/WS/Set-Channel) intern
+//! (als Tokio-Task im selben Prozess, kein Kindprozess) und öffnet ein
+//! natives WebView-Fenster auf dessen `/`.
 //!
-//! Beweist nur das Architektur-Muster (Server-Embedding + WebView), keine
-//! eigene UI. Sobald `apps/web` (Leptos) steht, wird das hier umgebaut, um
-//! dessen gebündeltes Frontend zu zeigen statt der Wegwerf-Seite - siehe
-//! CLAUDE.md, Abschnitt "Nächste Schritte".
+//! Das Frontend (Trunk-Build-Ausgabe von `apps/web`) wird HIER, nicht in
+//! `octlab-server`, per `rust-embed` zur Compile-Zeit eingebettet (Spec
+//! 0004) - kein `dist`-Ordner auf der Zielmaschine nötig. Bewusst NICHT als
+//! Cargo-Feature in `octlab-server` gelöst (siehe dessen Doc-Kommentar an
+//! `build_app_without_frontend`): das hätte Cargos Feature-Unification über
+//! den ganzen Workspace ausgelöst und `octlab-server`s EIGENE
+//! ServeDir-Tests unbemerkt kaputt gemacht, sobald `cargo test --workspace`
+//! auch `apps/desktop` mitbaut. Diese App holt sich stattdessen nur den
+//! fertigen API-Router (`build_app_without_frontend`) und hängt ihren
+//! eigenen, eingebetteten Fallback selbst an - `rust-embed` ist dadurch
+//! ausschließlich eine Abhängigkeit dieses Crates.
+//!
+//! `trunk build` muss vor diesem Build laufen; für `cargo tauri build`
+//! erledigt das `beforeBuildCommand` in `tauri.conf.json` automatisch.
 //!
 //! Konfiguration bewusst minimal: `octlab-server` nimmt normalerweise
 //! `--connection`/`--addr` über die Kommandozeile entgegen, aber eine
 //! Desktop-App hat keine sinnvolle CLI. Statt eine eigene Config-Schicht
-//! einzuziehen (verworfen, siehe CLAUDE.md YAGNI-Prinzip - das fliegt
-//! ohnehin raus, sobald `apps/web` kommt), liest dieses Provisorium zwei
-//! Env-Vars: `OCTLAB_CONNECTION` (`simulation` Default, oder `tcp`) und
-//! `OCTLAB_ADDR` (Pflicht bei `tcp`).
+//! einzuziehen (verworfen, siehe CLAUDE.md YAGNI-Prinzip), liest diese App
+//! zwei Env-Vars: `OCTLAB_CONNECTION` (`simulation` Default, oder `tcp`) und
+//! `OCTLAB_ADDR` (Pflicht bei `tcp`). Ein Settings-UI ist eine spätere,
+//! eigene Einheit (Spec 0004, "außerhalb des Scopes").
 
+use axum::response::IntoResponse;
 use octlab_server::ConnectionKind;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+/// Trunk-Build-Ausgabe von `apps/web`, zur Compile-Zeit dieses Binaries
+/// eingebettet. Pfad relativ zu diesem Crate (`CARGO_MANIFEST_DIR` =
+/// `apps/desktop`) - `trunk build` muss VOR diesem Build gelaufen sein,
+/// sonst schlägt schon das Kompilieren fehl (siehe Modul-Doc-Kommentar).
+#[derive(rust_embed::RustEmbed)]
+#[folder = "../web/dist"]
+struct FrontendAssets;
+
+/// Fallback-Handler fürs eingebettete Frontend - liefert `index.html` für
+/// `/`, sonst die Datei unter dem angefragten Pfad, ohne je das
+/// Dateisystem der Zielmaschine anzufassen.
+async fn embedded_frontend(uri: axum::http::Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    match FrontendAssets::get(path) {
+        Some(file) => {
+            let mime = file.metadata.mimetype().to_string();
+            (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, mime)],
+                file.data.into_owned(),
+            )
+                .into_response()
+        }
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            "Datei nicht im eingebetteten Frontend gefunden.",
+        )
+            .into_response(),
+    }
+}
 
 fn connection_from_env() -> (ConnectionKind, Option<String>) {
     let connection = match std::env::var("OCTLAB_CONNECTION").as_deref() {
@@ -28,17 +71,6 @@ fn connection_from_env() -> (ConnectionKind, Option<String>) {
     (connection, addr)
 }
 
-/// Verzeichnis mit der Trunk-Build-Ausgabe von `apps/web`. Wie bei
-/// `--connection`: Env-Var statt CLI (`OCTLAB_FRONTEND_DIST`), Default passt
-/// für einen Start aus dem Repo-Root (`cargo run -p octlab-desktop`).
-/// Echtes Bundling (Frontend in die App eingebettet statt vom Dateisystem
-/// geladen) kommt erst mit CLAUDE.md-Schritt 8.
-fn frontend_dist_from_env() -> std::path::PathBuf {
-    std::env::var("OCTLAB_FRONTEND_DIST")
-        .unwrap_or_else(|_| "apps/web/dist".to_string())
-        .into()
-}
-
 fn main() {
     tracing_subscriber::fmt::init();
 
@@ -47,14 +79,13 @@ fn main() {
             let (connection, addr) = connection_from_env();
 
             // Fail-fast wie bei octlab-server selbst: synchron auf
-            // build_app() warten, BEVOR ein Fenster entsteht, das sonst
-            // gegen einen nie startenden Server liefe.
-            let app_router = tauri::async_runtime::block_on(octlab_server::build_app(
-                connection,
-                addr,
-                frontend_dist_from_env(),
-            ))
+            // build_app_without_frontend() warten, BEVOR ein Fenster
+            // entsteht, das sonst gegen einen nie startenden Server liefe.
+            let api_router = tauri::async_runtime::block_on(
+                octlab_server::build_app_without_frontend(connection, addr),
+            )
             .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+            let app_router = api_router.fallback(embedded_frontend);
 
             let listener =
                 tauri::async_runtime::block_on(tokio::net::TcpListener::bind("127.0.0.1:3000"))?;
@@ -69,7 +100,7 @@ fn main() {
                 "main",
                 WebviewUrl::External("http://localhost:3000".parse().unwrap()),
             )
-            .title("octlab-desktop (Provisorium)")
+            .title("octlab-desktop")
             .inner_size(900.0, 600.0)
             .build()?;
 
