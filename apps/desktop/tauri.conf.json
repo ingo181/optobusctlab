@@ -4,10 +4,14 @@
   "version": "0.1.0",
   "identifier": "de.optobusctlab.desktop.dev",
   "build": {
-    "frontendDist": "http://localhost:3000"
+    "frontendDist": "http://localhost:3000",
+    "beforeBuildCommand": "cd web && trunk build"
   },
   "app": {
     "windows": []
   },
-  "bundle": {}
+  "bundle": {
+    "targets": ["appimage"],
+    "icon": ["icons/icon.png"]
+  }
 }

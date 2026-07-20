@@ -110,14 +110,14 @@ Zwei Betriebsarten, beide gegen denselben `octlab-server`:
   simuliert. Läuft überall, wo cargo läuft, auch im Dev-Container; keine
   Python- oder Sonstwas-Abhängigkeit. Entstanden beim Live-Beweis von
   Spec 0002, als die Anlage ausgeschaltet war.
-- **Integriert (Live-Beweis, Desktop, später Pi): `trunk build`.**
+- **Integriert (Live-Beweis, später Pi): `trunk build`.**
   `cd apps/web && trunk build`, dann `cargo run -p octlab-server` vom
   Repo-Root - der Server serviert `apps/web/dist` (Default von
   `--frontend-dist`) als Fallback hinter den API-Routen. Fehlt das
   Build-Verzeichnis, antwortet `/` mit einem Hinweis auf `trunk build`
-  statt kommentarlosem 404. `apps/desktop` nutzt denselben Mechanismus
-  (Env-Var `OCTLAB_FRONTEND_DIST`, Default `apps/web/dist` - Start aus dem
-  Repo-Root).
+  statt kommentarlosem 404. `apps/desktop` nutzt das NICHT mehr zur
+  Laufzeit (siehe Schritt 9 unten) - dort ist die Trunk-Build-Ausgabe seit
+  Spec 0004 zur Compile-Zeit ins Binary eingebettet.
 
 Toolchain auf dem Host: `trunk` (0.21.x) + Rust-Target
 `wasm32-unknown-unknown`. Beides ist bewusst (noch) NICHT im Dev-Container -
@@ -147,6 +147,21 @@ Styling-Wahl sobald die UI über ein einzelnes Instrument hinauswächst
   bewusst vermieden).
 - **DTOs für serde bleiben in `octlab-server`**, nicht in `octlab-protocol` –
   Protokoll-Ebene soll nicht von serde abhängen (Layer-Trennung).
+- **Kein Cargo-Feature, das bestehendes Verhalten einer gemeinsam genutzten
+  Library-Crate ERSETZT** (z.B. "Frontend-Auslieferung Platte vs.
+  eingebettet"), nur um einem EINZELNEN Workspace-Mitglied eine andere
+  Variante zu geben. Cargo unifiziert Features einer Abhängigkeit über ALLE
+  Workspace-Mitglieder, die im selben Build-Graph landen (`cargo test
+  --workspace` baut z.B. `octlab-server` UND `apps/desktop` zusammen) – ein
+  nicht rein additives Feature, das nur `apps/desktop` aktivieren wollte,
+  hat dadurch unbemerkt auch `octlab-server`s EIGENE Tests umgeschaltet und
+  kaputt gemacht (siehe `specs/0004-tauri-bundling.md`, Abschnitt
+  "Architektur-Kurskorrektur"). Stattdessen: die Library-Crate bleibt bei
+  ihrem einen Standardverhalten, ein Aufrufer mit abweichendem Bedarf holt
+  sich nur die Bausteine (z.B. `build_app_without_frontend`) und baut die
+  Abweichung SELBST in seinem eigenen Crate zusammen – die abweichende
+  Dependency (hier `rust-embed`) taucht dann im Dependency-Baum der
+  Library-Crate gar nicht erst auf.
 
 ## Spezifikation: ESDM + Cucumber (Harness/Spec-Trennung)
 
@@ -456,11 +471,10 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    128×128 RGBA - `tauri::generate_context!()` bricht sonst zur Compile-Zeit
    ab) und `MPL-2.0` in `deny.toml` (siehe "Dev Container" oben). Läuft NUR
    nativ, nie im Dev-Container (siehe dort). Live gegen die reale Anlage
-   verifiziert: natives Fenster ("octlab-desktop (Provisorium)"), echte
-   tickende DIV-Werte. Seit Spec 0002 zeigt die WebView automatisch das
-   Leptos-Frontend (der eingebettete Server serviert `apps/web/dist`, Env-Var
-   `OCTLAB_FRONTEND_DIST`) – echtes Bundling/Einbetten des Frontends in die
-   App kommt mit Schritt 8.
+   verifiziert: natives Fenster, echte tickende DIV-Werte. Der
+   Env-Var-Mechanismus `OCTLAB_FRONTEND_DIST` (Laufzeit-Laden von
+   `apps/web/dist`) war ein Provisorium und ist mit Spec 0004 (Schritt 9)
+   entfallen - das Frontend wird seither zur Compile-Zeit eingebettet.
 5. Weitere Module in `octlab-devices`: Dcg, Div, AdaIo – Subkanal-Zuordnung
    IMMER gegen die aktuelle Syntax-Doku im Community-Forum
    (https://ctlabforum.thoralt.de) und/oder https://www.sn7400.de/ctlab/
@@ -487,10 +501,41 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    und Fehlerverhalten vorab am realen Gerät verifiziert (siehe
    "Verifizierte Hardware-Fakten": Klemmung trotz PARERR, Toleranz
    0.1 Hz absolut). Live gegen die reale Anlage bewiesen.
-9. **Nächster aktiver Schritt.** `apps/desktop` (Tauri) –
-   Bundling/Installer/Icon-Feinschliff; dabei das Frontend in die App
-   einbetten statt zur Laufzeit von `apps/web/dist` zu laden. Das reine
-   Server-Embedding+WebView-Muster ist mit Schritt 4 bereits bewiesen.
+9. ~~Tauri-Bundling mit eingebettetem Frontend~~ – **erledigt** (Spec 0004,
+   Linux/AppImage; Windows/macOS bleiben CI-Zukunft). Frontend wird zur
+   Compile-Zeit per `rust-embed` eingebettet - bewusst NICHT als Cargo-
+   Feature in `octlab-server` (erster Anlauf, verworfen: brach `cargo test
+   --workspace` durch Feature-Unification, siehe Spec 0004 "Architektur-
+   Kurskorrektur" und die neue Design-Entscheidung unten), sondern als
+   reine `apps/desktop`-Abhängigkeit: `octlab_server::build_app_without_frontend`
+   liefert Health/WS/Set-Channel-Routen ohne Frontend-Fallback,
+   `apps/desktop` hängt seinen eigenen `rust-embed`-Handler an. Build-Kette:
+   `tauri.conf.json`s `build.beforeBuildCommand` (`"cd web && trunk build"`
+   - Working Directory ist `apps/`, NICHT `apps/desktop`, siehe Spec 0004)
+   baut das Frontend automatisch vor jedem `cargo tauri build`.
+   `bundle.targets: ["appimage"]` + `bundle.icon: ["icons/icon.png"]`
+   (ohne Icon-Eintrag bricht das AppImage-Bundling ab). Auf dieser
+   Bau-Maschine (EndeavourOS/Arch, aktuelle Toolchain) brauchte
+   `linuxdeploy` zusätzlich `NO_STRIP=1` in der Umgebung (bekannte
+   Inkompatibilität zwischen dessen gebündeltem `strip` und
+   `.relr.dyn`-Sektionen moderner Toolchains, kein Projekt-Bug, nicht im
+   Repo verankert). Live-Beweis: gebautes `.AppImage` nach `/tmp` kopiert,
+   von dort (kein Repo-Pfad in der Nähe) gegen `fake_xport` gestartet -
+   Health-Endpoint, eingebettetes Frontend (`<title>optobusctlab</title>`),
+   echter WebSocket-Push einer DIV-Messung und der Set-Channel-Endpoint
+   liefen alle wie erwartet.
+   **Bekannte Einschränkung: AppImages brauchen zum Start FUSE**
+   (`libfuse2`/`libfuse3` bzw. das `fuse`-Paket) - viele aktuelle
+   Distributionen bringen `libfuse2` nicht mehr standardmäßig mit, das
+   Artefakt startet dort ohne weiteres Zutun nicht (`dlopen(): error
+   loading libfuse.so.2` o.ä.). Workaround, verifiziert auf dieser
+   Bau-Maschine (`./octlab-desktop_0.1.0_amd64.AppImage
+   --appimage-extract-and-run` startete den eingebetteten Server korrekt,
+   `curl localhost:3000/health` → `{"status":"ok"}`, ganz ohne FUSE-Mount):
+   das eingebaute AppImage-Runtime-Flag `--appimage-extract-and-run`
+   entpackt das Image in ein Temp-Verzeichnis und führt es von dort direkt
+   aus, umgeht FUSE damit komplett. Kein Projekt-Code nötig, nur
+   Nutzer-Doku (README).
 
 ## Backlog (kein aktiver Schritt, nur vorgemerkt)
 
@@ -505,6 +550,16 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
   UND wir bereit sind, eine dynamische Syntax-Auflösung zur Laufzeit zu
   bauen (Subkanal-Zuordnung von der Hardware selbst abfragen statt statisch
   in `octlab-devices` zu hardcoden) – dann eigene Spec, kein Nebenbei-Umbau.
+- **Parallel `.deb`+`.rpm`+AppImage bündeln, sobald die Windows/macOS/Linux-
+  CI-Actions-Matrix kommt** (siehe "Build & Test", Cross-Compile-Ziele).
+  `tauri.conf.json`s `bundle.targets` akzeptiert grundsätzlich mehrere
+  Linux-Ziele gleichzeitig (`["deb", "rpm", "appimage"]`) - dann bekommt
+  jede Distro ihr natives Paketformat, und FUSE ist für `.deb`/`.rpm`-Nutzer
+  gar kein Thema mehr (siehe Schritt 9, "Bekannte Einschränkung" zu
+  AppImage/FUSE). Nicht jetzt umgesetzt, weil `.deb`/`.rpm`-Bau zusätzliche
+  Tools voraussetzt (`dpkg`/`rpmbuild`), die auf dieser Bau-Maschine
+  (EndeavourOS/Arch) nicht ohne Weiteres vorhanden sind - gehört inhaltlich
+  in die CI-Matrix-Einheit, nicht in eine Einzelmaschinen-Ad-hoc-Prüfung.
 
 ## Für den Menschen im Projekt
 

@@ -57,10 +57,29 @@ mit `cargo-deny` und `esdm`-CLI für den Backend-Kern (die fünf `crates/`).
 Details, Build-/Run-Kommandos und bekannte Podman-Netzwerk-Stolpersteine
 stehen in [`CLAUDE.md`](./CLAUDE.md#dev-container-podman).
 
-**Tauri läuft bewusst NICHT im Dev-Container.** Das Desktop-Bundle (`apps/desktop`,
-sobald angelegt) braucht `webkit2gtk`/native GUI-Libs und wird nativ auf dem
+**Tauri läuft bewusst NICHT im Dev-Container.** Das Desktop-Bundle
+(`apps/desktop`) braucht `webkit2gtk`/native GUI-Libs und wird nativ auf dem
 jeweiligen Host-OS gebaut (Windows/macOS/Linux je eigener CI-Runner) – der
 Dev-Container bleibt schlank und bezieht sich nur auf den Backend-Kern.
+
+## Desktop-Bundle (Tauri)
+
+`apps/desktop` bündelt Server + Frontend zu einem installierbaren Artefakt.
+Aktuell nur Linux/AppImage (Windows/macOS folgen über eine CI-Matrix), Details
+und Build-Kette in [`CLAUDE.md`](./CLAUDE.md).
+
+**Bekannte Einschränkung:** AppImages brauchen zum Start FUSE
+(`libfuse2`/`libfuse3`). Viele aktuelle Distributionen bringen `libfuse2`
+nicht mehr standardmäßig mit – ohne FUSE startet das `.AppImage` nicht
+(`dlopen(): error loading libfuse.so.2` o.ä.). Workaround ohne
+Installation von Zusatzpaketen:
+
+```bash
+./octlab-desktop_<version>_amd64.AppImage --appimage-extract-and-run
+```
+
+Das entpackt das Image in ein Temp-Verzeichnis und führt es von dort direkt
+aus, ganz ohne FUSE-Mount.
 
 ## Lizenz
 
