@@ -14,7 +14,7 @@
 
 use async_trait::async_trait;
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 mod sim_bus;
@@ -207,8 +207,7 @@ impl BoardConnection for TcpConnection {
 
     async fn send_line(&mut self, line: &str) -> Result<(), TransportError> {
         let stream = self.stream.as_mut().ok_or(TransportError::Disconnected)?;
-        stream.write_all(line.as_bytes()).await?;
-        stream.write_all(b"\r\n").await?;
+        write_frame(stream, line).await?;
         Ok(())
     }
 
@@ -240,9 +239,73 @@ impl BoardConnection for TcpConnection {
     }
 }
 
+/// Schreibt eine Zeile samt CR/LF-Abschluss auf `writer` - in EINEM Write.
+///
+/// Zwei getrennte kleine Writes (erst die Zeile, dann `\r\n`) lösen am
+/// TCP-Socket den Nagle-Algorithmus aus: Das zweite Segment wartet auf die
+/// Bestätigung des ersten, die Gegenseite bestätigt verzögert. Gegen
+/// `fake_xport` gemessen kostete das ~41 ms pro Abfrage statt <1 ms (Spec
+/// 0005, Messpunkt 14). Bewusst KEIN `TCP_NODELAY`: Ein vollständiger Frame
+/// pro Write löst das Problem an der Ursache.
+///
+/// Generisch über `AsyncWrite` statt fest auf `TcpStream`, damit sich im
+/// Test zählen lässt, wie viele einzelne Writes dabei entstehen - an einem
+/// echten Socket ist das von außen nicht verlässlich sichtbar (der Kernel
+/// darf kleine Segmente zusammenfassen oder teilen).
+async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, line: &str) -> std::io::Result<()> {
+    let frame = format!("{line}\r\n");
+    writer.write_all(frame.as_bytes()).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test-Writer: nimmt jeden Puffer vollständig an und protokolliert
+    /// jeden einzelnen Write für sich - so wird sichtbar, in wie viele
+    /// Writes ein Frame zerfällt.
+    #[derive(Default)]
+    struct CountingWriter {
+        writes: Vec<Vec<u8>>,
+    }
+
+    impl AsyncWrite for CountingWriter {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.writes.push(buf.to_vec());
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Zeile und CR/LF gehen in EINEM Write raus. Zwei getrennte kleine
+    /// Writes lösten gegen `fake_xport` Nagle-Algorithmus + verzögerte
+    /// Bestätigung aus (~41 ms pro Abfrage statt <1 ms, Spec 0005,
+    /// Messpunkt 14).
+    #[tokio::test]
+    async fn frame_geht_in_genau_einem_write_raus() {
+        let mut writer = CountingWriter::default();
+
+        write_frame(&mut writer, "0:IDN?").await.unwrap();
+
+        pretty_assert_eq!(writer.writes, vec![b"0:IDN?\r\n".to_vec()]);
+    }
 
     #[tokio::test]
     async fn simulated_connection_echoes_queued_responses() {
