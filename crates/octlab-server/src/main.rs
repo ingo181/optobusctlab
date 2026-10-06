@@ -31,6 +31,11 @@ struct Cli {
     /// einmal `trunk build` gelaufen ist.
     #[arg(long, default_value = "apps/web/dist")]
     frontend_dist: std::path::PathBuf,
+
+    /// Intervall des Poll-Zyklus über die Kanalliste in Millisekunden
+    /// (Spec 0005). 0 schaltet das Polling ab.
+    #[arg(long, default_value_t = 1000)]
+    poll_interval_ms: u64,
 }
 
 #[tokio::main]
@@ -39,7 +44,14 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    let app = match build_app(cli.connection, cli.addr, cli.frontend_dist).await {
+    let app = match build_app(
+        cli.connection,
+        cli.addr,
+        cli.frontend_dist,
+        std::time::Duration::from_millis(cli.poll_interval_ms),
+    )
+    .await
+    {
         Ok(app) => app,
         Err(err) => {
             eprintln!("{err}");

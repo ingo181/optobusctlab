@@ -23,3 +23,5 @@ tower-http = { version = "0.6", features = ["fs"] }
 # Nur für `ServiceExt::oneshot` in den Router-Tests (tests/frontend_dist.rs) -
 # tower ist über axum sowieso schon im Dependency-Baum.
 tower = { version = "0.5", features = ["util"] }
+# Nur für Tests: pausierte Zeit (`start_paused`), Spec 0005.
+tokio = { workspace = true, features = ["test-util"] }

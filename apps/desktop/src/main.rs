@@ -21,9 +21,11 @@
 //! `--connection`/`--addr` über die Kommandozeile entgegen, aber eine
 //! Desktop-App hat keine sinnvolle CLI. Statt eine eigene Config-Schicht
 //! einzuziehen (verworfen, siehe CLAUDE.md YAGNI-Prinzip), liest diese App
-//! zwei Env-Vars: `OCTLAB_CONNECTION` (`simulation` Default, oder `tcp`) und
-//! `OCTLAB_ADDR` (Pflicht bei `tcp`). Ein Settings-UI ist eine spätere,
-//! eigene Einheit (Spec 0004, "außerhalb des Scopes").
+//! Env-Vars: `OCTLAB_CONNECTION` (`simulation` Default, oder `tcp`),
+//! `OCTLAB_ADDR` (Pflicht bei `tcp`) und `OCTLAB_POLL_INTERVAL_MS`
+//! (Poll-Intervall der Kanalliste, Default 1000, 0 = aus; Spec 0005). Ein
+//! Settings-UI ist eine spätere, eigene Einheit (Spec 0004, "außerhalb des
+//! Scopes").
 
 use axum::response::IntoResponse;
 use octlab_server::ConnectionKind;
@@ -71,6 +73,15 @@ fn connection_from_env() -> (ConnectionKind, Option<String>) {
     (connection, addr)
 }
 
+/// `OCTLAB_POLL_INTERVAL_MS`, Default 1000 ms wie bei `octlab-server`.
+fn poll_interval_from_env() -> std::time::Duration {
+    let ms = std::env::var("OCTLAB_POLL_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    std::time::Duration::from_millis(ms)
+}
+
 fn main() {
     tracing_subscriber::fmt::init();
 
@@ -81,10 +92,13 @@ fn main() {
             // Fail-fast wie bei octlab-server selbst: synchron auf
             // build_app_without_frontend() warten, BEVOR ein Fenster
             // entsteht, das sonst gegen einen nie startenden Server liefe.
-            let api_router = tauri::async_runtime::block_on(
-                octlab_server::build_app_without_frontend(connection, addr),
-            )
-            .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+            let api_router =
+                tauri::async_runtime::block_on(octlab_server::build_app_without_frontend(
+                    connection,
+                    addr,
+                    poll_interval_from_env(),
+                ))
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
             let app_router = api_router.fallback(embedded_frontend);
 
             let listener =

@@ -17,14 +17,18 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use octlab_lab::{Lab, SetOutcome};
-use octlab_protocol::{ChannelKey, Message as LabMessage, ModuleAddress, SubChannel};
+use octlab_lab::{ChannelUpdate, Lab, PollConfig, PollStats};
+use octlab_protocol::{ChannelKey, ModuleAddress, SubChannel};
 use octlab_transport::{BoardConnection, SimulatedConnection, TcpConnection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
+
+pub mod channels;
+pub use channels::{poll_config, ChannelSpec, CHANNELS};
 
 /// Wahl der Verbindungsebene beim Start. Default `Simulation` – sicher,
 /// läuft überall ohne angeschlossenes c't-Lab. `Tcp` ist bewusst nur
@@ -37,24 +41,64 @@ pub enum ConnectionKind {
     Tcp,
 }
 
-/// Über die Leitung ans Frontend geschicktes JSON – bewusst getrennt von
-/// `octlab_protocol::Message`, damit die Protokoll-Ebene nicht von serde
-/// abhängen muss (Layer-Trennung wie im CtLab-Library-Vorbild).
+/// Über `/ws` ans Frontend geschicktes JSON – bewusst getrennt von den
+/// Lab-Typen, damit Protokoll- und Lab-Ebene nicht von serde abhängen
+/// müssen (Layer-Trennung wie im CtLab-Library-Vorbild).
+///
+/// Vertrag (Spec 0005, rückwärtskompatibel zu Spec 0002): die Felder aus
+/// 0002 (`address`, `subchannel`, `value`, `status_text`) plus `stale`.
+/// `value` ist `null`, wenn der Kanal noch nie geantwortet hat - ein Client
+/// nach Spec 0002 (`value: f64`) verwirft so eine Nachricht (dort AK3),
+/// statt einen falschen Wert anzuzeigen. Ein veralteter Kanal mit bekanntem
+/// Wert schickt diesen letzten Wert mit, ein 0002-Client behält ihn also.
+/// `status_text` ist seit Spec 0005 immer `null` (Quittungen und
+/// IDN-Antworten laufen nicht mehr über `/ws`), bleibt aber im Format.
 #[derive(Debug, Serialize)]
 struct MeasurementDto {
     address: u8,
     subchannel: u8,
-    value: f64,
+    value: Option<f64>,
     status_text: Option<String>,
+    stale: bool,
 }
 
-impl From<LabMessage> for MeasurementDto {
-    fn from(msg: LabMessage) -> Self {
+impl From<ChannelUpdate> for MeasurementDto {
+    fn from(update: ChannelUpdate) -> Self {
         Self {
-            address: msg.key.address.0,
-            subchannel: msg.key.subchannel.0,
-            value: msg.value,
-            status_text: msg.status_text,
+            address: update.key.address.0,
+            subchannel: update.key.subchannel.0,
+            value: update.value,
+            status_text: None,
+            stale: update.stale,
+        }
+    }
+}
+
+/// Eintrag von `GET /api/channels`.
+#[derive(Debug, Serialize)]
+struct ChannelDto {
+    address: u8,
+    subchannel: u8,
+    name: &'static str,
+    unit: &'static str,
+}
+
+/// Antwort von `GET /api/poll` (Spec 0005, AK10).
+#[derive(Debug, Serialize)]
+struct PollStatsDto {
+    interval_ms: u128,
+    last_cycle_ms: Option<u128>,
+    completed_cycles: u64,
+    overrun_episodes: u64,
+}
+
+impl From<PollStats> for PollStatsDto {
+    fn from(stats: PollStats) -> Self {
+        Self {
+            interval_ms: stats.interval.as_millis(),
+            last_cycle_ms: stats.last_cycle.map(|d| d.as_millis()),
+            completed_cycles: stats.completed_cycles,
+            overrun_episodes: stats.overrun_episodes,
         }
     }
 }
@@ -76,24 +120,13 @@ pub async fn build_app(
     connection: ConnectionKind,
     addr: Option<String>,
     frontend_dist: PathBuf,
+    poll_interval: Duration,
 ) -> Result<Router, String> {
-    let boxed_connection: Box<dyn BoardConnection> = match connection {
-        ConnectionKind::Simulation => Box::new(SimulatedConnection::new("dev-simulation")),
-        ConnectionKind::Tcp => {
-            let addr = addr.ok_or_else(|| "--addr ist bei --connection tcp Pflicht".to_string())?;
-            Box::new(TcpConnection::new(addr))
-        }
-    };
-
-    let lab = spawn_lab(boxed_connection).await?;
-
-    // PROVISORIUM: nur wenn wirklich Hardware dranhängt, macht ein Poll
-    // überhaupt Sinn (SimulatedConnection hat sowieso keine Warteschlange
-    // gefüllt) - siehe Doc-Kommentar an `poll_div_provisional`.
-    if connection == ConnectionKind::Tcp {
-        tokio::spawn(poll_div_provisional(lab.clone()));
-    }
-
+    let lab = spawn_lab(
+        new_connection(connection, addr)?,
+        poll_config(poll_interval),
+    )
+    .await?;
     Ok(build_router(lab, frontend_dist))
 }
 
@@ -114,38 +147,55 @@ pub async fn build_app(
 pub async fn build_app_without_frontend(
     connection: ConnectionKind,
     addr: Option<String>,
+    poll_interval: Duration,
 ) -> Result<Router, String> {
-    let boxed_connection: Box<dyn BoardConnection> = match connection {
+    let lab = spawn_lab(
+        new_connection(connection, addr)?,
+        poll_config(poll_interval),
+    )
+    .await?;
+    Ok(api_router(lab))
+}
+
+/// Wie [`build_app`], aber mit einer bereits fertig präparierten Verbindung
+/// statt der `ConnectionKind`-Auswahl und frei wählbarer Poll-Konfiguration -
+/// für Tests, die eine `SimulatedConnection` (Skript-Antworten oder
+/// `SimBus`) hineingeben wollen. Tests mit FIFO-Skript (`push_reply`)
+/// brauchen Intervall 0, sonst nehmen Poll-Abfragen ihnen die Antworten weg.
+pub async fn build_app_with_connection(
+    connection: Box<dyn BoardConnection>,
+    frontend_dist: PathBuf,
+    poll: PollConfig,
+) -> Result<Router, String> {
+    let lab = spawn_lab(connection, poll).await?;
+    Ok(build_router(lab, frontend_dist))
+}
+
+/// Polling läuft auf JEDER Verbindungsart, auch in der Simulation (Spec
+/// 0005, AK11) - dort antwortet niemand, alle Kanäle werden "veraltet".
+fn new_connection(
+    connection: ConnectionKind,
+    addr: Option<String>,
+) -> Result<Box<dyn BoardConnection>, String> {
+    Ok(match connection {
         ConnectionKind::Simulation => Box::new(SimulatedConnection::new("dev-simulation")),
         ConnectionKind::Tcp => {
             let addr = addr.ok_or_else(|| "--addr ist bei --connection tcp Pflicht".to_string())?;
             Box::new(TcpConnection::new(addr))
         }
-    };
-
-    let lab = spawn_lab(boxed_connection).await?;
-
-    if connection == ConnectionKind::Tcp {
-        tokio::spawn(poll_div_provisional(lab.clone()));
-    }
-
-    Ok(api_router(lab))
+    })
 }
 
-/// Wie [`build_app`], aber mit einer bereits fertig präparierten Verbindung
-/// statt der `ConnectionKind`-Auswahl - für Tests, die eine
-/// `SimulatedConnection` mit Skript-Antworten (`push_reply`) hineingeben
-/// wollen. Startet bewusst KEINEN Provisoriums-Poll.
-pub async fn build_app_with_connection(
+async fn spawn_lab(
     connection: Box<dyn BoardConnection>,
-    frontend_dist: PathBuf,
-) -> Result<Router, String> {
-    let lab = spawn_lab(connection).await?;
-    Ok(build_router(lab, frontend_dist))
-}
-
-async fn spawn_lab(connection: Box<dyn BoardConnection>) -> Result<Arc<Lab>, String> {
-    match tokio::time::timeout(Duration::from_secs(3), Lab::spawn(connection)).await {
+    poll: PollConfig,
+) -> Result<Arc<Lab>, String> {
+    match tokio::time::timeout(
+        Duration::from_secs(3),
+        Lab::spawn_with_polling(connection, poll),
+    )
+    .await
+    {
         Ok(Ok(lab)) => Ok(Arc::new(lab)),
         Ok(Err(err)) => Err(format!("c't-Lab-Verbindung fehlgeschlagen: {err}")),
         Err(_) => Err("c't-Lab-Verbindung fehlgeschlagen: Timeout nach 3s".to_string()),
@@ -162,6 +212,8 @@ fn api_router(lab: Arc<Lab>) -> Router {
         .route("/health", get(health))
         .route("/ws", get(ws_upgrade))
         .route("/api/channel/:addr/:sub", post(set_channel))
+        .route("/api/channels", get(list_channels))
+        .route("/api/poll", get(poll_stats))
         .with_state(state)
 }
 
@@ -199,8 +251,14 @@ struct SetChannelResponse {
 }
 
 /// Setzt einen Kanalwert: Set-Kommando senden, Quittung (Subkanal 255)
-/// abwarten, Kanal rücklesen (Spec 0003, AK4/AK5). Generisch über
-/// Adresse/Subkanal - die DDS-Frequenz ist nur der erste Nutzer.
+/// abwarten, Kanal rücklesen - als EINE atomare Sequenz im Lab-Actor
+/// (Spec 0003 AK4/AK5, Spec 0005 AK6). Generisch über Adresse/Subkanal -
+/// die DDS-Frequenz ist nur der erste Nutzer.
+///
+/// Abweichend von Spec 0003 wird auch ohne Quittung zurückgelesen
+/// (Stellglied-Regel: verbindlich ist nur das Rücklesen). Fehlt die
+/// Quittung, ist die Antwort trotzdem kein 2xx (504), enthält aber den
+/// Rücklesewert, falls einer kam (Entscheidung "Option A", 2026-10-07).
 async fn set_channel(
     Path((addr, sub)): Path<(u8, u8)>,
     State(state): State<AppState>,
@@ -211,23 +269,32 @@ async fn set_channel(
         subchannel: SubChannel(sub),
     };
 
-    match state.lab.set(key, request.value).await {
-        SetOutcome::NoReply => (
-            StatusCode::GATEWAY_TIMEOUT,
-            Json(SetChannelResponse {
-                ack: None,
-                value: None,
-                error: Some("keine Antwort vom Modul (Timeout)".to_string()),
-            }),
-        ),
-        SetOutcome::Confirmed { status_text } => {
-            let ack = Some(status_text.unwrap_or_else(|| "OK".to_string()));
-            match state.lab.query(key).await {
-                Some(value) => (
+    let result = state.lab.set_and_read_back(key, request.value).await;
+    let value = result.readback;
+    match result.ack {
+        None => {
+            let error = match value {
+                Some(_) => "keine Quittung (Timeout), Rücklesewert liegt vor",
+                None => "keine Antwort vom Modul (Timeout)",
+            };
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(SetChannelResponse {
+                    ack: None,
+                    value,
+                    error: Some(error.to_string()),
+                }),
+            )
+        }
+        // Quittungs-Code 0 = angenommen.
+        Some(ack) if ack.code == 0.0 => {
+            let ack = Some(ack.status_text.unwrap_or_else(|| "OK".to_string()));
+            match value {
+                Some(_) => (
                     StatusCode::OK,
                     Json(SetChannelResponse {
                         ack,
-                        value: Some(value),
+                        value,
                         error: None,
                     }),
                 ),
@@ -244,11 +311,15 @@ async fn set_channel(
                 ),
             }
         }
-        SetOutcome::Rejected { code, status_text } => {
-            let ack = Some(status_text.unwrap_or_else(|| format!("Fehlercode {code}")));
-            // Auch bei Ablehnung rücklesen: die Firmware kann den Wert
-            // trotz Fehlerquittung verändert haben (Klemmung).
-            let value = state.lab.query(key).await;
+        // Ablehnung (z.B. PARERR): Ist-Wert trotzdem mitliefern - die
+        // Firmware kann den Wert trotz Fehlerquittung verändert haben
+        // (Klemmung).
+        Some(ack) => {
+            let code = ack.code;
+            let ack = Some(
+                ack.status_text
+                    .unwrap_or_else(|| format!("Fehlercode {code}")),
+            );
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(SetChannelResponse {
@@ -259,6 +330,26 @@ async fn set_channel(
             )
         }
     }
+}
+
+/// `GET /api/channels`: die Kanalliste der Übersicht (Spec 0005).
+async fn list_channels() -> Json<Vec<ChannelDto>> {
+    Json(
+        CHANNELS
+            .iter()
+            .map(|c| ChannelDto {
+                address: c.address,
+                subchannel: c.subchannel,
+                name: c.name,
+                unit: c.unit,
+            })
+            .collect(),
+    )
+}
+
+/// `GET /api/poll`: gemessene Zykluszeit und weitere Kennzahlen (AK10).
+async fn poll_stats(State(state): State<AppState>) -> Json<PollStatsDto> {
+    Json(state.lab.poll_stats().into())
 }
 
 async fn missing_frontend() -> impl IntoResponse {
@@ -273,47 +364,55 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
-/// PROVISORIUM: pollt einen einzelnen fest verdrahteten Kanal (DIV, Adresse
-/// 1, Subkanal 0 - siehe "Verifizierte Hardware-Fakten" in CLAUDE.md) alle
-/// 500ms, rein damit die statische Seite unter `/` überhaupt Live-Werte zu
-/// sehen bekommt. `query()`s Ergebnis wird bewusst ignoriert (`let _ =`) -
-/// die eigentliche Zustellung an WebSocket-Clients passiert unabhängig
-/// davon in `Lab::dispatch`, das JEDE eingehende Nachricht broadcastet,
-/// nicht nur Query-Antworten. Fliegt raus, sobald `apps/web` eine echte
-/// Subscription-/Sweep-Logik mitbringt - siehe CLAUDE.md, Abschnitt
-/// "Nächste Schritte".
-async fn poll_div_provisional(lab: Arc<Lab>) {
-    let key = ChannelKey {
-        address: ModuleAddress(1),
-        subchannel: SubChannel(0),
-    };
-    let mut interval = tokio::time::interval(Duration::from_millis(500));
-    loop {
-        interval.tick().await;
-        let _ = lab.query(key).await;
-    }
-}
-
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| stream_measurements(socket, state))
 }
 
-/// Streamt jede vom Lab empfangene Nachricht sofort als JSON-Zeile an den
-/// verbundenen Browser – kein Polling, echtes Push via `broadcast::Receiver`.
+/// `/ws`-Vertrag (Spec 0005): beim Verbinden der aktuelle Stand aller
+/// schon abgefragten Kanäle der Kanalliste (Snapshot), danach NUR Änderungen
+/// von Wert oder Veraltet-Markierung. Unaufgeforderte Zeilen und Quittungen
+/// erscheinen hier nie - sie ändern den Kanalzustand nicht (AK9) und werden
+/// im Lab-Actor geloggt.
 async fn stream_measurements(mut socket: WebSocket, state: AppState) {
-    let mut updates = state.lab.subscribe();
+    let (snapshot, mut changes) = state.lab.subscribe_channels();
+    for update in snapshot {
+        if send_update(&mut socket, update).await.is_err() {
+            return;
+        }
+    }
 
-    while let Ok(msg) = updates.recv().await {
-        let dto: MeasurementDto = msg.into();
-        let payload = match serde_json::to_string(&dto) {
-            Ok(json) => json,
-            Err(err) => {
-                tracing::warn!(?err, "Serialisierung fehlgeschlagen");
-                continue;
+    loop {
+        match changes.recv().await {
+            Ok(update) => {
+                if send_update(&mut socket, update).await.is_err() {
+                    return; // Client hat die Verbindung geschlossen
+                }
             }
-        };
-        if socket.send(WsMessage::Text(payload)).await.is_err() {
-            break; // Client hat die Verbindung geschlossen
+            // Client war zu langsam und hat Meldungen verpasst: mit einem
+            // frischen Snapshot wieder aufsetzen, statt still Zwischenstände
+            // zu verlieren.
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::warn!(missed, "WebSocket-Client hinterher - sende Snapshot neu");
+                let (snapshot, fresh) = state.lab.subscribe_channels();
+                changes = fresh;
+                for update in snapshot {
+                    if send_update(&mut socket, update).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
+async fn send_update(socket: &mut WebSocket, update: ChannelUpdate) -> Result<(), axum::Error> {
+    let dto: MeasurementDto = update.into();
+    match serde_json::to_string(&dto) {
+        Ok(json) => socket.send(WsMessage::Text(json)).await,
+        Err(err) => {
+            tracing::warn!(?err, "Serialisierung fehlgeschlagen");
+            Ok(())
         }
     }
 }

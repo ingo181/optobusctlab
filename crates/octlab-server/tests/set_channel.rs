@@ -7,9 +7,10 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use octlab_server::build_app_with_connection;
-use octlab_transport::SimulatedConnection;
+use octlab_server::{build_app_with_connection, poll_config};
+use octlab_transport::{SimBus, SimulatedConnection};
 use std::path::PathBuf;
+use std::time::Duration;
 use tower::util::ServiceExt;
 
 /// Schickt einen Setz-Request gegen einen Router mit der übergebenen,
@@ -22,7 +23,9 @@ async fn post_set(
     // Frontend-Verzeichnis ist für die API-Routen irrelevant - ein nicht
     // existierender Pfad reicht (der Fallback wird hier nie angefragt).
     let dist = PathBuf::from("/nonexistent-frontend-dist");
-    let app = build_app_with_connection(Box::new(connection), dist)
+    // Intervall 0 = Polling aus: die Skript-Antworten (push_reply) gehören
+    // ganz dem Setz-Vorgang (Spec 0005, AK11).
+    let app = build_app_with_connection(Box::new(connection), dist, poll_config(Duration::ZERO))
         .await
         .expect("build_app_with_connection mit Simulation darf nicht fehlschlagen");
 
@@ -79,16 +82,43 @@ async fn ablehnung_liefert_statustext_und_ist_wert() {
     assert_eq!(json["value"], 999999.8);
 }
 
-// AK5, Fall 2: keine Antwort -> kein 2xx, Grund nennt den Timeout
+// AK5, Fall 2 (Spec 0003), seit Spec 0005 AK6 angepasst: Ohne Quittung
+// wird trotzdem zurückgelesen (verbindlich ist nur das Rücklesen). Liefert
+// das Rücklesen einen Wert, antwortet der Server 504 MIT diesem Wert
+// (Entscheidung "Option A", 2026-10-07) - kein 2xx, weil die Quittung fehlt.
 #[tokio::test]
-async fn keine_antwort_liefert_timeout_fehler() {
+async fn keine_quittung_mit_ruecklesewert_liefert_504_mit_wert() {
+    let bus = SimBus::new();
+    bus.set_value(4, 0, "1000.0");
+    bus.drop_acks(4); // Modul übernimmt den Wert, quittiert aber nicht
+    let conn = SimulatedConnection::new("test-sim").with_bus(bus);
+
+    let (status, json) = post_set(conn, "/api/channel/4/0", 2500.0).await;
+
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "Antwort war: {json}");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "ack": null,
+            "value": 2500.0,
+            "error": "keine Quittung (Timeout), Rücklesewert liegt vor"
+        })
+    );
+}
+
+// Weder Quittung noch Rücklesewert: 504 ohne Wert, wie bisher.
+#[tokio::test]
+async fn keine_antwort_liefert_504_ohne_wert() {
     let conn = SimulatedConnection::new("test-sim"); // keine Antworten präpariert
 
     let (status, json) = post_set(conn, "/api/channel/4/0", 2500.0).await;
 
-    assert!(
-        !status.is_success(),
-        "keine Antwort darf kein 2xx sein: {json}"
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "Antwort war: {json}");
+    assert_eq!(json["ack"], serde_json::Value::Null);
+    assert_eq!(
+        json["value"],
+        serde_json::Value::Null,
+        "Antwort war: {json}"
     );
     let error = json["error"].as_str().unwrap_or_default();
     assert!(

@@ -20,9 +20,15 @@ fn temp_dist(marker: &str) -> PathBuf {
 }
 
 async fn get_root(frontend_dist: PathBuf) -> (StatusCode, String) {
-    let app = build_app(ConnectionKind::Simulation, None, frontend_dist)
-        .await
-        .expect("build_app mit Simulation darf nicht fehlschlagen");
+    // Polling ist für die Frontend-Auslieferung irrelevant -> Intervall 0.
+    let app = build_app(
+        ConnectionKind::Simulation,
+        None,
+        frontend_dist,
+        std::time::Duration::ZERO,
+    )
+    .await
+    .expect("build_app mit Simulation darf nicht fehlschlagen");
     let response = app
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
