@@ -161,7 +161,6 @@ fn ChannelOverview(measurements: RwSignal<HashMap<ChannelId, Measurement>>) -> i
 
     view! {
         <section class="overview">
-            <h2>"Kanalübersicht"</h2>
             {move || match channels.get() {
                 None => view! { <p class="overview-notice">"Lade Kanalliste …"</p> }.into_any(),
                 Some(Err(message)) => {
@@ -268,25 +267,30 @@ fn FrequencyControl(state: FrequencyState) -> impl IntoView {
         }
     };
 
+    // Zwei Spalten (Spec 0006, AK4): links das Bedienfeld, rechts ein
+    // reservierter, noch leerer Bereich für das Ziffernfeld aus Spec 0007.
     view! {
-        <section class="frequency-control">
-            <div class="frequency-row">
-                <input
-                    class=input_class
-                    type="text"
-                    inputmode="decimal"
-                    placeholder="Frequenz in Hz"
-                    prop:value=input
-                    on:input=move |ev| input.set(event_target_value(&ev))
-                />
-                <button on:click=on_set disabled=busy>"Setzen"</button>
-            </div>
-            <p class="frequency-confirmed">{confirmed_text}</p>
-            {move || {
-                panel.get().notice.map(|notice| view! { <p class="frequency-notice">{notice}</p> })
-            }}
-            <p class="frequency-caption">"DDS-Frequenz – Adresse 4, Subkanal 0"</p>
-        </section>
+        <div class="dds-layout">
+            <section class="frequency-control">
+                <div class="frequency-row">
+                    <input
+                        class=input_class
+                        type="text"
+                        inputmode="decimal"
+                        placeholder="Frequenz in Hz"
+                        prop:value=input
+                        on:input=move |ev| input.set(event_target_value(&ev))
+                    />
+                    <button on:click=on_set disabled=busy>"Setzen"</button>
+                </div>
+                <p class="frequency-confirmed">{confirmed_text}</p>
+                {move || {
+                    panel.get().notice.map(|notice| view! { <p class="frequency-notice">{notice}</p> })
+                }}
+                <p class="frequency-caption">"DDS-Frequenz – Adresse 4, Subkanal 0"</p>
+            </section>
+            <div class="keypad-reserved" aria-hidden="true"></div>
+        </div>
     }
 }
 

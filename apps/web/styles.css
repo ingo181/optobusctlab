@@ -25,11 +25,13 @@ body {
   flex-direction: column;
 }
 
+/* Höhenbudget bei 800x480 (Spec 0006): Tab-Leiste 44 px Tabs + 2 x 4 px
+   = 52 px, Rand der Ansicht 2 x 8 px - bleiben 412 px für den Inhalt. */
 .tabbar {
   display: flex;
   align-items: center;
   gap: 1rem;
-  padding: 0.4rem 0.75rem;
+  padding: 4px 0.75rem;
   background: #2a2a33;
 }
 
@@ -49,7 +51,10 @@ body {
 
 .tab {
   font: inherit;
-  padding: 0.5rem 1rem;
+  box-sizing: border-box;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 1rem;
   border: 0;
   border-radius: 0.4rem;
   background: transparent;
@@ -68,7 +73,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 1rem;
+  padding: 0.5rem 1rem;
   text-align: center;
 }
 
@@ -134,8 +139,25 @@ figcaption {
 
 /* Frequenz-Bedienfeld (Spec 0003): gleiche Panel-Optik wie das Instrument. */
 
+/* DDS-Ansicht: zwei Spalten, rechts der reservierte Bereich für das
+   Ziffernfeld aus Spec 0007 (bis dahin leer, nur gestrichelt umrandet). */
+.dds-layout {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.keypad-reserved {
+  flex: none;
+  width: 160px;
+  height: 200px;
+  box-sizing: border-box;
+  border: 1px dashed #c6c8ce;
+  border-radius: 0.75rem;
+}
+
 .frequency-control {
-  margin-top: 1rem;
   padding: 1rem 1.5rem;
   width: min(26rem, 90vw);
   box-sizing: border-box;
@@ -198,14 +220,11 @@ figcaption {
   color: #55555f;
 }
 
-/* Kanalübersicht (Spec 0005) */
+/* Kanalübersicht (Spec 0005). Zeilenhöhe ca. 28 px (15,2 px Schrift x
+   1,25 + 2 x 4 px Polster): Kopf + 12 Zeilen + Hinweis ca. 386 px, passt
+   in die 412 px bei 800x480 (Spec 0006, AK3). */
 .overview {
-  margin-top: 1.5rem;
-}
-
-.overview h2 {
-  font-size: 1.1rem;
-  margin: 0 0 0.5rem;
+  margin: 0;
 }
 
 .overview-table {
@@ -217,7 +236,8 @@ figcaption {
 .overview-table th,
 .overview-table td {
   text-align: left;
-  padding: 0.3rem 0.5rem;
+  padding: 0.25rem 0.5rem;
+  line-height: 1.25;
   border-bottom: 1px solid #ddd;
 }
 
@@ -244,4 +264,8 @@ figcaption {
 .overview-caption {
   color: #666;
   font-size: 0.85rem;
+}
+
+.overview-caption {
+  margin: 0.4rem 0 0;
 }
