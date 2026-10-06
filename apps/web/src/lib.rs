@@ -11,4 +11,5 @@ pub mod frequency;
 pub mod gauge;
 pub mod measurements;
 pub mod overview;
+pub mod tabs;
 pub mod ws;

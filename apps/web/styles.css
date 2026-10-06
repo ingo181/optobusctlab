@@ -10,22 +10,66 @@
 
 body {
   margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
   background: #e4e6ea;
 }
 
-.panel {
-  text-align: center;
+/* Tab-Navigation (Spec 0006). Ausgeblendete Ansichten bleiben gemountet;
+   `[hidden]` muss gegen jede eigene `display`-Regel gewinnen. */
+[hidden] {
+  display: none !important;
 }
 
-.panel h1 {
-  font-size: 1.1rem;
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.4rem 0.75rem;
+  background: #2a2a33;
+}
+
+.app-name {
+  color: #b9bac2;
+  font-size: 0.8rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #55555f;
+  white-space: nowrap;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tab {
+  font: inherit;
+  padding: 0.5rem 1rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: #e4e6ea;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: #e4e6ea;
+  color: #1c1c22;
+  font-weight: 600;
+}
+
+.view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem;
+  text-align: center;
 }
 
 .instrument {

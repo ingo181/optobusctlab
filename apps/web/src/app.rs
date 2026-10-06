@@ -1,8 +1,16 @@
-//! Wurzel-Komponente: hält den Messwert-Zustand und zeigt das DIV-Gauge,
-//! das DDS-Bedienfeld und die Kanalübersicht (Spec 0005).
+//! Wurzel-Komponente: hält den Messwert-Zustand und den Zustand des
+//! DDS-Bedienfelds und zeigt drei Ansichten als Tabs (Spec 0006): Gauge
+//! (DIV), Kanalübersicht (Spec 0005) und DDS-Steuerung (Spec 0003).
+//!
+//! Alle drei Ansichten bleiben IMMER gemountet, ein Tab-Wechsel blendet nur
+//! über das `hidden`-Attribut aus und ein. Zusammen mit dem Zustand auf
+//! App-Ebene (eine WebSocket-Verbindung, DDS-Zustand in `FrequencyState`)
+//! geht beim Wechsel nichts verloren (Spec 0006, AK6).
 
+use crate::frequency::FrequencyPanel;
 use crate::gauge::needle_angle;
 use crate::measurements::{ChannelId, Measurement};
+use crate::tabs::Tab;
 use leptos::prelude::*;
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -18,27 +26,124 @@ const DIV_CHANNEL: ChannelId = (1, 0);
 const DDS_ADDRESS: u8 = 4;
 const DDS_FREQUENCY_SUBCHANNEL: u8 = 0;
 
+/// Zustand des DDS-Bedienfelds, auf App-Ebene gehalten statt in
+/// `FrequencyControl` (Spec 0006, AK6). `RwSignal` ist in Leptos 0.8 `Copy`:
+/// Es ist nur ein Handle auf ein Signal, das dem reaktiven System gehört.
+/// Deshalb ist auch dieses Bündel `Copy` und kann ohne `clone()` als Prop
+/// weitergereicht werden.
+#[derive(Clone, Copy)]
+struct FrequencyState {
+    input: RwSignal<String>,
+    panel: RwSignal<FrequencyPanel>,
+    invalid_input: RwSignal<bool>,
+    /// Verhindert überlappende Requests: das Modul quittiert auf einem
+    /// geteilten Statuskanal, gleichzeitige Setz-Vorgänge würden sich die
+    /// Quittung streitig machen (siehe Doc-Kommentar an `Lab::set`).
+    busy: RwSignal<bool>,
+}
+
+impl FrequencyState {
+    fn new() -> Self {
+        Self {
+            input: RwSignal::new(String::new()),
+            panel: RwSignal::new(FrequencyPanel::default()),
+            invalid_input: RwSignal::new(false),
+            busy: RwSignal::new(false),
+        }
+    }
+}
+
+/// Tab beim Laden: aus dem URL-Fragment (`#gauge`, `#uebersicht`, `#dds`),
+/// sonst Gauge. Nur hier gelesen - Klicks schreiben das Fragment nicht.
+fn initial_tab() -> Tab {
+    let hash = web_sys::window()
+        .and_then(|w| w.location().hash().ok())
+        .unwrap_or_default();
+    Tab::from_fragment(&hash)
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let measurements = RwSignal::new(HashMap::<ChannelId, Measurement>::new());
     crate::ws::connect(measurements);
+    let frequency = FrequencyState::new();
+    let active = RwSignal::new(initial_tab());
 
     let div_value =
         Signal::derive(move || measurements.with(|m| m.get(&DIV_CHANNEL).and_then(|x| x.value)));
 
     view! {
-        <main class="panel">
-            <h1>"optobusctlab"</h1>
-            <Gauge
-                label="DIV – Adresse 1, Subkanal 0"
-                unit="V"
-                min=0.0
-                max=0.02
-                value=div_value
-            />
-            <FrequencyControl />
-            <ChannelOverview measurements=measurements />
-        </main>
+        <div class="app">
+            <TabBar active=active />
+            <section
+                id="view-gauge"
+                class="view"
+                role="tabpanel"
+                aria-labelledby="tab-gauge"
+                hidden=move || active.get() != Tab::Gauge
+            >
+                <Gauge
+                    label="DIV – Adresse 1, Subkanal 0"
+                    unit="V"
+                    min=0.0
+                    max=0.02
+                    value=div_value
+                />
+            </section>
+            <section
+                id="view-uebersicht"
+                class="view"
+                role="tabpanel"
+                aria-labelledby="tab-uebersicht"
+                hidden=move || active.get() != Tab::Uebersicht
+            >
+                <ChannelOverview measurements=measurements />
+            </section>
+            <section
+                id="view-dds"
+                class="view"
+                role="tabpanel"
+                aria-labelledby="tab-dds"
+                hidden=move || active.get() != Tab::Dds
+            >
+                <FrequencyControl state=frequency />
+            </section>
+        </div>
+    }
+}
+
+/// Tab-Leiste (Spec 0006, AK1): ein Button je Ansicht, der aktive ist
+/// hervorgehoben und per `aria-selected` für Screenreader markiert. Der
+/// kleine Name links ist kein Bedienelement.
+#[component]
+fn TabBar(active: RwSignal<Tab>) -> impl IntoView {
+    let tabs = Tab::ALL
+        .into_iter()
+        .map(|tab| {
+            let selected = move || active.get() == tab;
+            view! {
+                <button
+                    id=format!("tab-{}", tab.fragment())
+                    class="tab"
+                    class:active=selected
+                    role="tab"
+                    aria-selected=move || if selected() { "true" } else { "false" }
+                    aria-controls=format!("view-{}", tab.fragment())
+                    on:click=move |_| active.set(tab)
+                >
+                    {tab.label()}
+                </button>
+            }
+        })
+        .collect_view();
+
+    view! {
+        <nav class="tabbar">
+            <span class="app-name">"optobusctlab"</span>
+            <div class="tabs" role="tablist" aria-label="Ansichten">
+                {tabs}
+            </div>
+        </nav>
     }
 }
 
@@ -111,17 +216,19 @@ fn ChannelOverview(measurements: RwSignal<HashMap<ChannelId, Measurement>>) -> i
 /// Bedienfeld für die DDS-Frequenz (Spec 0003, AK6-AK8): Eingabefeld +
 /// Setzen-Button, zeigt die zuletzt per Rücklesen BESTÄTIGTE Frequenz -
 /// nie den Wunschwert (Klemm-Verhalten der Firmware, siehe Spec).
+///
+/// Der Zustand kommt von außen (`FrequencyState` in `App`), damit er einen
+/// Tab-Wechsel garantiert übersteht (Spec 0006, AK6).
 #[component]
-fn FrequencyControl() -> impl IntoView {
-    use crate::frequency::{apply_set_response, parse_frequency_input, FrequencyPanel};
+fn FrequencyControl(state: FrequencyState) -> impl IntoView {
+    use crate::frequency::{apply_set_response, parse_frequency_input};
 
-    let input = RwSignal::new(String::new());
-    let panel = RwSignal::new(FrequencyPanel::default());
-    let invalid_input = RwSignal::new(false);
-    // Verhindert überlappende Requests: das Modul quittiert auf einem
-    // geteilten Statuskanal, gleichzeitige Setz-Vorgänge würden sich die
-    // Quittung streitig machen (siehe Doc-Kommentar an `Lab::set`).
-    let busy = RwSignal::new(false);
+    let FrequencyState {
+        input,
+        panel,
+        invalid_input,
+        busy,
+    } = state;
 
     let on_set = move |_| {
         match parse_frequency_input(&input.get()) {
