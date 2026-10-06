@@ -168,6 +168,20 @@ dieselbe Einzelseite mit Titelzeile, Gauge, DDS-Bedienfeld und Übersicht.
 | AK7 Große Fenster | Screenshot 1000x1300 je Tab | rot: alles sichtbar, aber keine Tabs |
 | AK8 Echtes Gerät | **von Hand** im Labor | offen |
 
+**Ergebnisse während der Umsetzung:**
+
+- **AK6 Handtest bestanden** (2026-10-07, Betreiber Ingo, Desktop-Browser
+  gegen `fake_xport` ohne `--mute`, Stand nach Schritt 2, Commit
+  `1e8f7e2`). Alle vier Testschritte verhielten sich wie beschrieben,
+  keine Abweichungen:
+  1. Wert 2500 gesetzt, die bestätigte Frequenz erschien.
+  2. 3000 getippt und NICHT gesetzt, dann über Übersicht und Gauge zurück
+     zu DDS: Das Eingabefeld zeigte 3000, die bestätigte Frequenz 2500.
+  3. Die Übersicht zeigte "DDS Frequenz" 2500 mit aktuellen Werten.
+  4. Direktes Laden mit `#dds`, danach Wechsel zu Gauge: Das Gauge
+     erschien in voller Größe und lief live (damit auch die Prüfung "Gauge
+     im ausgeblendeten Zustand", siehe unten, von Hand bestätigt).
+
 **Gauge im ausgeblendeten Zustand:** Das Gauge darf nicht mit falscher
 Größe erscheinen, wenn es ausgeblendet gerendert wurde und erst später
 sichtbar wird. Das Screenshot-Werkzeug kann keinen Tab-Wechsel auslösen;
