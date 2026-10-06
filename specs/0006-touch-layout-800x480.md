@@ -1,6 +1,6 @@
 # 0006 – Touch-Layout 800x480
 
-Status: Entwurf
+Status: In Arbeit
 
 ## Kontext
 
