@@ -33,8 +33,14 @@ die drei Bereiche auf Tabs verteilt werden.
   **DDS-Steuerung**.
 - Jede Ansicht ist bei 800x480 ohne Scrollen nutzbar.
 - Touch-Ziele mindestens ca. 44 px.
-- Nachweis über Headless-Screenshots; das Verhalten am echten Touch-Gerät
-  ist ein offener Messpunkt.
+- Nachweis über Headless-Screenshots (Hilfsmittel: `tools/screenshot/`);
+  das Verhalten am echten Touch-Gerät ist ein offener Messpunkt.
+- Start-Tab nach dem Laden: **Gauge**.
+- Tabs gibt es in **allen** Fenstergrößen (ein Layout, ein Code-Pfad).
+- In der DDS-Ansicht wird **Platz für ein eigenes Ziffernfeld reserviert**;
+  das Ziffernfeld selbst kommt mit Spec 0007. Das Eingabefeld bleibt
+  (Desktop-Bedienung mit Tastatur).
+- Umsetzung im **bestehenden handgeschriebenen CSS**, ohne Tailwind.
 
 **Unverändert bleiben:** der `/ws`-Vertrag und die HTTP-Endpunkte (Spec
 0005), das Verhalten des DDS-Bedienfelds (Spec 0003: nur der
@@ -45,7 +51,8 @@ Rücklesewert wird als bestätigte Frequenz gezeigt), die Anzeige-Logik der
 
 Die Screenshot-Kriterien werden mit Headless-Firefox bei einer Fenstergröße
 von genau 800x480 geprüft, gegen `fake_xport --mute 2` (damit "veraltet"
-sichtbar ist). "Ohne Scrollen sichtbar" heißt: vollständig innerhalb des
+sichtbar ist), mit dem Hilfsmittel aus `tools/screenshot/` (siehe dessen
+README). "Ohne Scrollen sichtbar" heißt: vollständig innerhalb des
 800x480-Ausschnitts, nichts abgeschnitten.
 
 ### AK1: Tab-Leiste in jeder Ansicht
@@ -55,6 +62,12 @@ Wenn eine der drei Ansichten aktiv ist
 Dann ist die Tab-Leiste mit den Einträgen "Gauge", "Übersicht" und
 "DDS-Steuerung" vollständig sichtbar und der aktive Tab ist erkennbar
 hervorgehoben
+
+### AK1a: Start-Tab ist Gauge
+
+Gegeben das Frontend wird (neu) geladen
+Wenn noch kein Tab gewählt wurde
+Dann ist der Tab "Gauge" aktiv und die Gauge-Ansicht sichtbar
 
 ### AK2: Gauge-Ansicht ohne Scrollen
 
@@ -75,13 +88,19 @@ und veraltete Kanäle sind weiterhin als "veraltet" erkennbar
 Anmerkung: Tabellenzeilen sind keine Touch-Ziele (nicht bedienbar), für
 sie gilt die 44-px-Grenze aus AK5 nicht.
 
-### AK4: DDS-Steuerung ohne Scrollen
+### AK4: DDS-Steuerung ohne Scrollen, mit reserviertem Platz fürs Ziffernfeld
 
 Gegeben das Frontend bei 800x480 mit aktivem Tab "DDS-Steuerung"
 Wenn ein Setz-Vorgang abgeschlossen ist (Erfolg oder Fehler)
 Dann sind Eingabefeld, Button "Setzen", bestätigte Frequenz und ein
 Hinweistext (z.B. "keine Quittung (Timeout), Rücklesewert liegt vor")
-gleichzeitig ohne Scrollen sichtbar
+gleichzeitig ohne Scrollen sichtbar, und daneben oder darunter ist ein
+freier Bereich für das Ziffernfeld aus Spec 0007 reserviert, ebenfalls
+ohne Scrollen sichtbar
+
+Vorschlag für die Größe des reservierten Bereichs (endgültig in Spec
+0007): mindestens 3 Spalten und 4 Zeilen à 44 px plus Abstände, also
+etwa 160 x 200 px. Bis 0007 bleibt der Bereich leer.
 
 ### AK5: Touch-Ziele mindestens ca. 44 px
 
@@ -125,6 +144,11 @@ Bis AK8 erbracht ist, bleibt der Status höchstens "In Arbeit".
 - Hochformat, andere Auflösungen als 800x480 als Pflichtziel (nur AK7 als
   Regressionsschutz)
 - Kiosk-Setup des Pi selbst (Autostart, Browser-Konfiguration)
+- Das Ziffernfeld selbst - eigene Spec 0007; hier wird nur Platz
+  reserviert (AK4)
+- Tailwind - 0006 bleibt beim handgeschriebenen `apps/web/styles.css`
+  (Stand 2026-10-07: eine Datei, 203 Zeilen, etwa 32 Regelblöcke, keine
+  Inline-Styles; Grundlage für eine spätere, getrennte Bewertung)
 - Änderungen an `/ws`, HTTP-Endpunkten oder der Lab-Ebene
 
 ## Alternativen (betrachtet, nicht gewählt)
@@ -144,30 +168,21 @@ Bis AK8 erbracht ist, bleibt der Status höchstens "In Arbeit".
   auf resistiven bzw. ungenauen Touchscreens; Tabs bleiben auch mit der
   Maus bedienbar (Desktop-App).
 
-## Offene Fragen
+## Entschiedene Fragen (Betreiber, 2026-10-07)
 
-1. **Bildschirmtastatur:** Am Kiosk gibt es keine physische Tastatur. Eine
-   System-Bildschirmtastatur verdeckt bei 480 px Höhe einen großen Teil
-   der DDS-Steuerung. Lieber ein eigenes Ziffernfeld in der Ansicht
-   (0-9, Komma, Löschen, Setzen) statt des Systemfelds? Das würde AK4/AK5
-   betreffen.
-2. **Start-Tab:** Welcher Tab ist nach dem Laden aktiv (Vorschlag:
-   Übersicht)? Soll der zuletzt gewählte Tab ein Neuladen überleben (z.B.
-   per URL-Fragment)?
-3. **Tabs auch auf großen Fenstern?** Vorschlag: ja, ein Layout für alle
-   Größen (YAGNI, ein Code-Pfad). Alternative: Tabs nur unterhalb einer
-   Bildschirmhöhe, darüber die heutige Einzelseite.
-4. **Tailwind:** CLAUDE.md legt Tailwind 4 fest, "sobald die UI über ein
-   einzelnes Instrument hinauswächst" - das ist mit Spec 0005 eingetreten.
-   Führt diese Spec Tailwind ein, oder bleibt es bei handgeschriebenem
-   `styles.css` und Tailwind kommt als eigener Schritt?
-5. **Reproduzierbarer Screenshot-Nachweis:** Headless-Firefox löst seinen
-   Screenshot beim `load`-Ereignis aus, also bevor die WASM-App gemountet
-   ist. Für die Beobachtung oben lief deshalb eine Wegwerf-Hilfsseite
-   (iframe plus absichtlich verzögerte Ressource), die nicht im Repo liegt.
-   Soll ein solches Hilfsmittel ins Repo (z.B. als Rust-Example analog
-   `fake_xport`), oder bleibt der Screenshot-Nachweis ein dokumentiertes
-   manuelles Verfahren?
+1. **Bildschirmtastatur:** Eigenes Ziffernfeld in der DDS-Ansicht statt
+   System-Bildschirmtastatur - als eigene **Spec 0007** nach dieser. In
+   0006 wird nur Platz dafür reserviert (AK4); das Eingabefeld bleibt für
+   die Desktop-Bedienung.
+2. **Start-Tab:** Gauge (AK1a). Ob der zuletzt gewählte Tab ein Neuladen
+   überlebt, ist nicht Teil dieser Spec.
+3. **Tabs auch auf großen Fenstern:** ja, ein Layout für alle Größen
+   (AK7).
+4. **Tailwind:** nicht in 0006, Umsetzung im bestehenden CSS (siehe
+   "Explizit außerhalb des Scopes"). Bewertung später und getrennt.
+5. **Screenshot-Nachweis:** Das Hilfsmittel liegt im Repo unter
+   `tools/screenshot/` (Skript, Hilfsseite, README; keine Binaries, keine
+   neue Crate).
 
 ## Offene Messpunkte für die nächste Laborsession
 
@@ -177,8 +192,8 @@ Bis AK8 erbracht ist, bleibt der Status höchstens "In Arbeit".
    übrig, die Höhe kosten?
 2. **Touch-Genauigkeit:** Treffen Finger zuverlässig Ziele von etwa 44 px
    (Tabs, "Setzen")? Gibt es Fehlgriffe zwischen benachbarten Tabs?
-3. **Texteingabe:** Wie verhält sich die Frequenz-Eingabe ohne physische
-   Tastatur (Bildschirmtastatur ja/nein, verdeckter Bereich)? Entscheidet
-   offene Frage 1.
+3. **Texteingabe:** Taucht im Kiosk-Browser beim Antippen des
+   Eingabefelds trotzdem eine System-Bildschirmtastatur auf (verdeckt sie
+   die Ansicht)? Relevant für Spec 0007 (eigenes Ziffernfeld).
 4. **Lesbarkeit:** Sind Tabellenzeilen und Zahlenwerte aus Arbeitsabstand
    am Gehäuse gut lesbar (Schriftgröße, Kontrast der "veraltet"-Zeilen)?
