@@ -213,7 +213,7 @@ Messpunkte erledigt sind. Die Einheit von DIV 0 wird statisch als
 | 4 | 0  | DDS Frequenz | Hz (verifiziert) |
 | 4 | 1  | DDS Pegel | mVeff |
 
-Das sind 13 Kanäle. Die Akzeptanzkriterien unten sind unabhängig von der
+Das sind 12 Kanäle. Die Akzeptanzkriterien unten sind unabhängig von der
 konkreten Liste formuliert.
 
 ## Akzeptanzkriterien
@@ -327,6 +327,16 @@ Die Setz-Sequenz aus Spec 0003 besteht aus drei Schritten: Setzen
 (`<addr>:<sub>?`). Der Lab-Actor führt sie als **eine** unteilbare
 Einheit aus.
 
+**Abweichung von Spec 0003:** Die Setz-Sequenz liest den Kanal auch
+dann zurück, wenn die Quittung ausbleibt. Spec 0003 (und die heutige
+Server-Umsetzung) bricht in diesem Fall ohne Rücklesen ab. Begründung:
+Stellglied-Regel aus CLAUDE.md. Die Quittung bestätigt nur die Annahme
+des Kommandos, verbindlich ist ausschließlich das Rücklesen. Eine
+verlorene Quittung heißt nicht, dass der Wert nicht übernommen wurde.
+Spec 0003 selbst bleibt unverändert, diese Spec ersetzt das Verhalten
+an dieser Stelle. Das HTTP-Antwortformat für "keine Quittung, aber
+Rücklesewert" ist in Schritt 5 (Server) noch festzulegen.
+
 ```gherkin
 Scenario: Setz-Sequenz überholt anstehende Poll-Abfragen
   Given eine Kanalliste mit mehreren Kanälen und laufendem Polling
@@ -349,7 +359,8 @@ Scenario: Atomarität gilt auch bei ausbleibender Quittung
   When die Setz-Sequenz für 4:0 läuft
   Then wird bis zum Ende der Setz-Sequenz keine Poll-Abfrage gesendet
   And die Setz-Sequenz blockiert das Polling höchstens 500 ms (Quittung) + 500 ms (Rücklesen)
-  And das Ergebnis meldet "keine Antwort" wie in Spec 0003
+  And das Ergebnis meldet für die Quittung "keine Antwort" wie in Spec 0003
+  And die Setz-Sequenz liest den Kanal trotzdem zurück und liefert den Rücklesewert, falls das Modul darauf antwortet
   And danach läuft das Polling weiter
 ```
 
@@ -546,7 +557,8 @@ Messpunkte unten sind Voraussetzung.
 
 ## Entschiedene Fragen (Betreiber, 2026-10-06)
 
-1. **Kanalliste:** Der Vorschlag mit 13 Kanälen bleibt (siehe
+1. **Kanalliste:** Der Vorschlag mit 12 Kanälen bleibt (ursprünglich
+   fälschlich als "13" gezählt, korrigiert 2026-10-06) (siehe
    "Kanalliste für diese Spec").
 2. **Ablage:** Die Kanalliste ist Server-Konfiguration. Es gibt kein
    ESDM-Read-Model, das wird nach der Laborsession neu bewertet.
@@ -602,7 +614,7 @@ wiederherstellen.
     `4:20?`. Antworten `4:10?..4:12?` (TRMSC bestückt?)?
 11. **Antwortzeiten:** Für je einen Kanal pro Modul die Zeit vom Senden
     bis zum Eintreffen der Antwortzeile messen, mit z.B. 20 Wiederholungen
-    und Min/Max. Daraus folgt, ob 13 Kanäle in 1 s passen und wie viel
+    und Min/Max. Daraus folgt, ob 12 Kanäle in 1 s passen und wie viel
     Reserve bleibt, wenn ein Kanal 500 ms im Timeout hängt.
 12. **Verschachtelte Abfragen:** Antworten zwei Module korrekt, wenn die
     zweite Abfrage gesendet wird, bevor die erste Antwort da ist (z.B.
