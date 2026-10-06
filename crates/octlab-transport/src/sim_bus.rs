@@ -47,6 +47,8 @@ struct BusState {
     /// Aktueller Wert je (Adresse, Subkanal), als Text wie auf dem Draht.
     values: HashMap<(u8, u8), String>,
     muted: HashSet<u8>,
+    /// Adressen, die Setz-Kommandos ohne Quittung übernehmen.
+    acks_dropped: HashSet<u8>,
     reply_delay: Duration,
     /// Eingeplante eingehende Zeilen, aufsteigend nach Fälligkeit sortiert.
     incoming: VecDeque<(Instant, String)>,
@@ -81,6 +83,13 @@ impl SimBus {
 
     pub fn unmute(&self, address: u8) {
         self.lock().muted.remove(&address);
+    }
+
+    /// Modul an `address` übernimmt Setz-Kommandos weiterhin, schickt aber
+    /// keine Quittung mehr ("verlorene Quittung", Spec 0005 AK6).
+    /// Abfragen beantwortet es normal.
+    pub fn drop_acks(&self, address: u8) {
+        self.lock().acks_dropped.insert(address);
     }
 
     /// Verzögerung zwischen Kommando und Antwort, für alle Module.
@@ -122,7 +131,9 @@ impl SimBus {
             }
             Request::Set(value) => {
                 state.values.insert((address, subchannel), value);
-                state.schedule(due, format!("#{address}:255=0 [OK]"));
+                if !state.acks_dropped.contains(&address) {
+                    state.schedule(due, format!("#{address}:255=0 [OK]"));
+                }
             }
         }
         drop(state);
@@ -360,6 +371,24 @@ mod tests {
         assert!(
             result.is_err(),
             "recv_line() muss pending bleiben, kam: {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn modul_ohne_quittung_uebernimmt_den_wert_und_antwortet_auf_ruecklesen() {
+        let (mut conn, bus) = connection_with_bus();
+        bus.set_value(4, 0, "1000.0");
+        bus.drop_acks(4);
+
+        conn.send_line("4:0=2500!").await.unwrap();
+        assert_eq!(recv_within(&mut conn, Duration::from_secs(1)).await, None);
+
+        conn.send_line("4:0?").await.unwrap();
+        assert_eq!(
+            recv_within(&mut conn, Duration::from_secs(1))
+                .await
+                .as_deref(),
+            Some("#4:0=2500")
         );
     }
 
