@@ -45,7 +45,9 @@ while [[ $# -gt 0 ]]; do
         --size) size="$2"; shift 2 ;;
         --mute) mutes+=(--mute "$2"); shift 2 ;;
         --tab) tab="$2"; shift 2 ;;
-        --out) out="$2"; shift 2 ;;
+        # Relativ zum Aufrufverzeichnis auflösen: Firefox würde einen
+        # relativen Pfad gegenüber seinem (temporären) Profil auflösen.
+        --out) out="$2"; [[ "$out" == /* ]] || out="$PWD/$out"; shift 2 ;;
         --wait-ms) wait_ms="$2"; shift 2 ;;
         --settle-ms) settle_ms="$2"; shift 2 ;;
         --no-build) build=0; shift ;;
@@ -140,5 +142,10 @@ timeout 120 firefox --headless --no-remote --profile "$work/profile" \
     exit 1
 }
 
+if [[ ! -s "$out" ]]; then
+    echo "Firefox meldete Erfolg, aber $out fehlt oder ist leer:" >&2
+    cat "$work/firefox.log" >&2
+    exit 1
+fi
 echo "Screenshot: $out (${width}x${height}, Tab-Fragment: ${tab:-keins}, stumm: ${mutes[*]:-keins})"
 echo "Poll-Statistik: $(curl -s http://127.0.0.1:3000/api/poll)"
