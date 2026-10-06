@@ -12,3 +12,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1"
+# Nur für Tests: pausierte Zeit (`start_paused`), Spec 0005.
+tokio = { workspace = true, features = ["test-util"] }

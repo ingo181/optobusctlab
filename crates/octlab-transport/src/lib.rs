@@ -17,6 +17,9 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+mod sim_bus;
+pub use sim_bus::SimBus;
+
 #[derive(Debug, Error)]
 pub enum TransportError {
     #[error("Verbindung getrennt")]
@@ -77,6 +80,9 @@ pub struct SimulatedConnection {
     /// Messwert), bei denen die Antwort erst NACH dem zugehörigen Kommando
     /// eintreffen darf.
     scripted_replies: std::collections::VecDeque<RawLine>,
+    /// Optionaler simulierter Bus mit "lebenden" Modulen (Spec 0005), siehe
+    /// [`SimBus`]. `None` = bisheriges, rein skriptgesteuertes Verhalten.
+    bus: Option<SimBus>,
 }
 
 impl SimulatedConnection {
@@ -86,7 +92,15 @@ impl SimulatedConnection {
             sent: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             queued_responses: std::collections::VecDeque::new(),
             scripted_replies: std::collections::VecDeque::new(),
+            bus: None,
         }
+    }
+
+    /// Hängt einen simulierten Bus an. Der Aufrufer behält ein geklontes
+    /// [`SimBus`]-Handle, um die Module zur Laufzeit zu steuern.
+    pub fn with_bus(mut self, bus: SimBus) -> Self {
+        self.bus = Some(bus);
+        self
     }
 
     /// Legt eine Antwort in die Warteschlange, die beim nächsten `recv_line()` geliefert wird.
@@ -120,6 +134,9 @@ impl BoardConnection for SimulatedConnection {
 
     async fn send_line(&mut self, line: &str) -> Result<(), TransportError> {
         self.sent.lock().unwrap().push(line.to_string());
+        if let Some(bus) = &self.bus {
+            bus.on_line_sent(line);
+        }
         // Ein gesendetes Kommando gibt die nächste Skript-Antwort frei
         // (falls vorhanden) - siehe Doc-Kommentar an `push_reply`.
         if let Some(reply) = self.scripted_replies.pop_front() {
@@ -131,6 +148,11 @@ impl BoardConnection for SimulatedConnection {
     async fn recv_line(&mut self) -> Result<RawLine, TransportError> {
         if let Some(line) = self.queued_responses.pop_front() {
             return Ok(line);
+        }
+        // Mit angeschlossenem Bus: auf dessen nächste fällige Zeile warten
+        // (bleibt ebenfalls pending, solange nichts eingeplant ist).
+        if let Some(bus) = &self.bus {
+            return Ok(bus.next_incoming().await);
         }
         // WICHTIG: Bei leerer Warteschlange NICHT sofort einen Fehler
         // zurückgeben. Ein "instant Err" würde im Lab-Actor (siehe
