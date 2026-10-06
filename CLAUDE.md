@@ -100,11 +100,14 @@ Zwei Betriebsarten, beide gegen denselben `octlab-server`:
   Client funktionieren dadurch in beiden Betriebsarten unverändert.
 - **Ohne eingeschaltete Anlage: `cargo run --example fake_xport -p
   octlab-transport`** startet einen protokoll-echten XPort-Simulator
-  (rohes TCP, CR/LF, antwortet auf das echte Draht-Format `1:0?` mit
-  Sinus + Rauschen über die Gauge-Skala; Adresse als Argument, Default
-  `127.0.0.1:15001`; Setz-Kommandos beantwortet er NICHT - das
-  Frequenz-Bedienfeld zeigt dagegen also erwartungsgemäß "keine
-  Antwort", kein Bug). Server dagegen mit `--connection tcp --addr
+  (rohes TCP, CR/LF, Module über `octlab_transport::SimBus`, Spec 0005:
+  beantwortet die Kanäle der Spec-0005-Kanalliste im echten Draht-Format
+  mit ERFUNDENEN Werten, DIV `1:0?` als Sinus + Rauschen über die
+  Gauge-Skala; Setz-Kommandos `<a>:<s>=<v>!` quittiert er mit
+  `#<a>:255=0 [OK]` und übernimmt den Wert fürs Rücklesen, ohne Klemmung
+  oder Rundung der echten Firmware; `--mute <addr>` schaltet ein Modul
+  stumm; Lausch-Adresse als Argument, Default `127.0.0.1:15001`).
+  Server dagegen mit `--connection tcp --addr
   127.0.0.1:15001` - damit läuft der komplette echte Stack (TcpConnection →
   Protokoll → Lab-Actor → WebSocket → Frontend), nur die Hardware ist
   simuliert. Läuft überall, wo cargo läuft, auch im Dev-Container; keine
