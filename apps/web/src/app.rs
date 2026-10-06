@@ -1,4 +1,5 @@
-//! Wurzel-Komponente: hält den Messwert-Zustand und zeigt das DIV-Gauge.
+//! Wurzel-Komponente: hält den Messwert-Zustand und zeigt das DIV-Gauge,
+//! das DDS-Bedienfeld und die Kanalübersicht (Spec 0005).
 
 use crate::gauge::needle_angle;
 use crate::measurements::{ChannelId, Measurement};
@@ -23,7 +24,7 @@ pub fn App() -> impl IntoView {
     crate::ws::connect(measurements);
 
     let div_value =
-        Signal::derive(move || measurements.with(|m| m.get(&DIV_CHANNEL).map(|x| x.value)));
+        Signal::derive(move || measurements.with(|m| m.get(&DIV_CHANNEL).and_then(|x| x.value)));
 
     view! {
         <main class="panel">
@@ -36,7 +37,74 @@ pub fn App() -> impl IntoView {
                 value=div_value
             />
             <FrequencyControl />
+            <ChannelOverview measurements=measurements />
         </main>
+    }
+}
+
+/// Kanalübersicht (Spec 0005): eine Zeile pro Kanal der Server-Kanalliste
+/// mit Wert, Einheit und Markierung "veraltet". Die Liste kommt einmalig
+/// per `GET /api/channels`, die Werte aus demselben `/ws`-Zustand wie das
+/// Gauge.
+#[component]
+fn ChannelOverview(measurements: RwSignal<HashMap<ChannelId, Measurement>>) -> impl IntoView {
+    use crate::overview::{is_stale, value_text};
+
+    // LocalResource statt Resource::new: WASM-Futures sind nicht `Send`
+    // (Erfahrungswert aus opnCAQ, siehe CLAUDE.md).
+    let channels = LocalResource::new(crate::api::get_channels);
+
+    view! {
+        <section class="overview">
+            <h2>"Kanalübersicht"</h2>
+            {move || match channels.get() {
+                None => view! { <p class="overview-notice">"Lade Kanalliste …"</p> }.into_any(),
+                Some(Err(message)) => {
+                    view! { <p class="overview-notice">{message}</p> }.into_any()
+                }
+                Some(Ok(list)) => {
+                    let rows = list
+                        .into_iter()
+                        .map(|channel| {
+                            let id: ChannelId = (channel.address, channel.subchannel);
+                            let value = move || measurements.with(|m| value_text(m.get(&id)));
+                            let stale = move || measurements.with(|m| is_stale(m.get(&id)));
+                            view! {
+                                <tr class:stale=stale>
+                                    <td>{channel.name}</td>
+                                    <td class="overview-key">
+                                        {format!("{}:{}", channel.address, channel.subchannel)}
+                                    </td>
+                                    <td class="overview-value">{value}</td>
+                                    <td>{channel.unit}</td>
+                                    <td class="overview-state">
+                                        {move || if stale() { "veraltet" } else { "" }}
+                                    </td>
+                                </tr>
+                            }
+                        })
+                        .collect_view();
+                    view! {
+                        <table class="overview-table">
+                            <thead>
+                                <tr>
+                                    <th>"Kanal"</th>
+                                    <th>"Adr:Sub"</th>
+                                    <th class="overview-value">"Wert"</th>
+                                    <th>"Einheit"</th>
+                                    <th>"Status"</th>
+                                </tr>
+                            </thead>
+                            <tbody>{rows}</tbody>
+                        </table>
+                    }
+                        .into_any()
+                }
+            }}
+            <p class="overview-caption">
+                "Kanalbelegung und Einheiten unverifiziert (außer DDS-Frequenz), siehe Spec 0005."
+            </p>
+        </section>
     }
 }
 

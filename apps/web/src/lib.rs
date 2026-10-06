@@ -10,4 +10,5 @@ pub mod app;
 pub mod frequency;
 pub mod gauge;
 pub mod measurements;
+pub mod overview;
 pub mod ws;

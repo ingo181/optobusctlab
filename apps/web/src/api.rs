@@ -50,6 +50,25 @@ pub async fn post_set_channel(
     Ok((http_ok, body))
 }
 
+/// `GET /api/channels`: Kanalliste der Übersicht (Spec 0005).
+pub async fn get_channels() -> Result<Vec<crate::overview::ChannelInfo>, String> {
+    let window = web_sys::window().ok_or_else(|| "kein window-Objekt".to_string())?;
+    let response: Response = JsFuture::from(window.fetch_with_str("/api/channels"))
+        .await
+        .map_err(js_error)?
+        .dyn_into()
+        .map_err(js_error)?;
+    if !response.ok() {
+        return Err(format!("Kanalliste: HTTP {}", response.status()));
+    }
+    let body = JsFuture::from(response.text().map_err(js_error)?)
+        .await
+        .map_err(js_error)?
+        .as_string()
+        .unwrap_or_default();
+    serde_json::from_str(&body).map_err(|err| format!("Kanalliste unlesbar: {err}"))
+}
+
 fn js_error(err: JsValue) -> String {
     format!("Anfrage fehlgeschlagen: {err:?}")
 }
