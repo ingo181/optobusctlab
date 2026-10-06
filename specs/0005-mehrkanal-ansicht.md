@@ -624,3 +624,15 @@ wiederherstellen.
     Modul aus der Kette genommen bzw. stromlos ist? Laufen Abfragen an
     die anderen Module weiter? (Die OptoBus-Kette leitet durch; ob das bei
     stromlosem Modul gilt, ist offen.)
+14. **Antwortzeit pro Abfrage am echten XPort (Median, Maximum): Reicht
+    ein 1-Hz-Zyklus für 12 Kanäle?** Anders als Messpunkt 11 (einzelne
+    Module über die Diagnose-Tools) hier über den eigenen Stack, also
+    `TcpConnection` und den Lab-Actor, mit LAUFENDEM `octlab-server`
+    gegen die reale Anlage: `GET /api/poll` mehrfach abfragen
+    (`last_cycle_ms`, `overrun_episodes`) und daraus Median und Maximum
+    pro Abfrage ableiten (Zykluszeit / Zahl der antwortenden Kanäle).
+    Hintergrund: Gegen `fake_xport` kostete das getrennte Senden von
+    Zeile und `\r\n` rund 41 ms pro Abfrage (Nagle-Algorithmus plus
+    verzögerte Bestätigung der Gegenseite). Ob der XPort sich genauso
+    verhält, ist offen; gemessen wird deshalb mit dem Stand NACH dem
+    Fix (eine Zeile pro Write).
