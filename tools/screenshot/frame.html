@@ -1,0 +1,47 @@
+<!doctype html>
+<!--
+  Hilfsseite für Headless-Screenshots (siehe README.md).
+
+  Headless-Firefox (`firefox --screenshot`) löst beim `load`-Ereignis aus,
+  also BEVOR die WASM-App gemountet ist und Messwerte über /ws angekommen
+  sind. Diese Seite bettet die App in ein iframe der gewünschten Größe ein
+  und lädt zusätzlich ein Bild, das `helper_server.py` erst nach `wait`
+  Millisekunden ausliefert - das hält das `load`-Ereignis so lange auf.
+
+  Query-Parameter: w, h (iframe-Größe in px), app (URL der App), wait (ms).
+-->
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <title>octlab screenshot frame</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      iframe {
+        border: 0;
+        display: block;
+      }
+      img {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const frame = document.createElement("iframe");
+      frame.style.width = (params.get("w") || "800") + "px";
+      frame.style.height = (params.get("h") || "480") + "px";
+      frame.src = params.get("app") || "http://localhost:3000/";
+      document.body.appendChild(frame);
+      const delay = document.createElement("img");
+      delay.src = "/slow?ms=" + encodeURIComponent(params.get("wait") || "8000");
+      document.body.appendChild(delay);
+    </script>
+  </body>
+</html>
