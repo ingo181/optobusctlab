@@ -471,7 +471,9 @@ impl Actor {
                     None => return,
                 },
                 line = self.connection.recv_line() => {
-                    self.receive(line);
+                    if let Some(msg) = self.receive(line) {
+                        log_unsolicited(&msg);
+                    }
                 }
                 () = sleep_until_or_forever(next_cycle_at) => {
                     if let Some(poll) = self.poll.as_mut() {
@@ -595,6 +597,7 @@ impl Actor {
                         if msg.key == key {
                             return Some(msg);
                         }
+                        log_unsolicited(&msg);
                     }
                 }
                 () = tokio::time::sleep_until(deadline) => return None,
@@ -624,6 +627,20 @@ impl Actor {
             }
         }
     }
+}
+
+/// Eine gültige Zeile, auf die gerade niemand wartet (der Actor wartet
+/// immer auf höchstens einen Kanal), ist unaufgefordert - z.B.
+/// Panel-Bedienung. Sie geht an die Abonnenten, ändert aber keinen
+/// Kanalzustand (Spec 0005, AK9) - das wird hier festgehalten.
+fn log_unsolicited(msg: &Message) {
+    tracing::info!(
+        address = msg.key.address.0,
+        subchannel = msg.key.subchannel.0,
+        value = msg.value,
+        status_text = ?msg.status_text,
+        "unaufgeforderte Zeile: an Abonnenten verteilt, Kanalzustand unverändert"
+    );
 }
 
 /// Schläft bis `at`, oder für immer bei `None` (kein Polling).
