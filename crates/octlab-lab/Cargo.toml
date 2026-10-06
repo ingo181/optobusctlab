@@ -12,7 +12,16 @@ tracing.workspace = true
 
 [dev-dependencies]
 cucumber = "0.21"
+# Nur für Tests: pausierte Zeit (`start_paused`), Spec 0005.
+tokio = { workspace = true, features = ["test-util"] }
 
 [[test]]
 name = "cucumber"
+harness = false
+
+# Eigener Runner für die Polling-Features (Spec 0005): läuft mit pausierter
+# Tokio-Uhr, die für die ganze Runtime gilt - deshalb getrennt vom
+# bestehenden `cucumber`-Runner, dessen Features echte Zeit nutzen.
+[[test]]
+name = "polling"
 harness = false
