@@ -14,7 +14,9 @@ Aufruf: tools/screenshot/shot.sh [Optionen]
 
   --size BxH        Fenstergröße in px (Default 800x480)
   --mute ADR        Modul ADR in fake_xport stummschalten (mehrfach möglich)
-  --out DATEI       Ziel-PNG (Default target/screenshots/frontend-BxH.png)
+  --tab NAME        URL-Fragment für die App, z.B. uebersicht -> /#uebersicht
+                    (Tab-Auswahl beim Laden, Spec 0006)
+  --out DATEI       Ziel-PNG (Default target/screenshots/frontend-BxH[-NAME].png)
   --wait-ms MS      Wartezeit, bis Firefox auslöst (Default 8000)
   --settle-ms MS    Wartezeit nach dem Serverstart, bevor Firefox startet,
                     damit der erste Poll-Zyklus durch ist (Default 3000)
@@ -30,6 +32,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tool_dir="$repo/tools/screenshot"
 size="800x480"
 mutes=()
+tab=""
 out=""
 wait_ms=8000
 settle_ms=3000
@@ -41,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --size) size="$2"; shift 2 ;;
         --mute) mutes+=(--mute "$2"); shift 2 ;;
+        --tab) tab="$2"; shift 2 ;;
         --out) out="$2"; shift 2 ;;
         --wait-ms) wait_ms="$2"; shift 2 ;;
         --settle-ms) settle_ms="$2"; shift 2 ;;
@@ -56,7 +60,11 @@ if [[ ! "$size" =~ ^([0-9]+)x([0-9]+)$ ]]; then
 fi
 width="${BASH_REMATCH[1]}"
 height="${BASH_REMATCH[2]}"
-out="${out:-$repo/target/screenshots/frontend-${width}x${height}.png}"
+if [[ -n "$tab" && ! "$tab" =~ ^[a-z0-9-]+$ ]]; then
+    echo "--tab erwartet Kleinbuchstaben, Ziffern, '-' (z.B. uebersicht)" >&2
+    exit 2
+fi
+out="${out:-$repo/target/screenshots/frontend-${width}x${height}${tab:+-$tab}.png}"
 
 for tool in firefox python3 curl cargo; do
     command -v "$tool" >/dev/null || { echo "$tool nicht gefunden" >&2; exit 1; }
@@ -121,7 +129,10 @@ sleep "$(awk "BEGIN { print $settle_ms / 1000 }")"
 # --- Screenshot --------------------------------------------------------------
 mkdir -p "$(dirname "$out")"
 mkdir -p "$work/profile"
-url="http://127.0.0.1:$helper_port/?w=$width&h=$height&wait=$wait_ms&app=http://localhost:3000/"
+# Das Fragment der App muss in der URL der Hilfsseite als %23 kodiert sein -
+# ein rohes '#' wäre das Fragment der Hilfsseite selbst.
+app="http://localhost:3000/${tab:+%23$tab}"
+url="http://127.0.0.1:$helper_port/?w=$width&h=$height&wait=$wait_ms&app=$app"
 timeout 120 firefox --headless --no-remote --profile "$work/profile" \
     --window-size="$width,$height" --screenshot "$out" "$url" >"$work/firefox.log" 2>&1 || {
     echo "Firefox-Screenshot fehlgeschlagen:" >&2
@@ -129,5 +140,5 @@ timeout 120 firefox --headless --no-remote --profile "$work/profile" \
     exit 1
 }
 
-echo "Screenshot: $out (${width}x${height}, stumm: ${mutes[*]:-keins})"
+echo "Screenshot: $out (${width}x${height}, Tab-Fragment: ${tab:-keins}, stumm: ${mutes[*]:-keins})"
 echo "Poll-Statistik: $(curl -s http://127.0.0.1:3000/api/poll)"

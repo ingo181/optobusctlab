@@ -136,6 +136,45 @@ Scrollen nutzbar; Befunde siehe Messpunkte unten
 
 Bis AK8 erbracht ist, bleibt der Status höchstens "In Arbeit".
 
+## Prüfart je AK und Rot-Nachweis
+
+Prüfart: **Rust** = Host-Test in `apps/web/src/tabs.rs` (läuft unter
+`cargo test --workspace`); **Screenshot** = Sichtung eines PNG aus
+`tools/screenshot/shot.sh --size <BxH> --tab <fragment> --mute 2`;
+**von Hand** = Bedienung durch den Betreiber. Komponenten, Klicks und
+Layout sind in Rust nicht testbar (Leptos CSR, keine Browser-Tests, keine
+neue Abhängigkeit - Entscheidung 2026-10-07).
+
+Die Tab-Auswahl beim Laden läuft über das URL-Fragment (`#gauge`,
+`#uebersicht`, `#dds`), nur beim Laden gelesen; Klicks schreiben es
+nicht; unbekanntes oder fehlendes Fragment -> Gauge (Entscheidung
+2026-10-07, Host-Test in `tabs.rs`). Damit kann das Screenshot-Werkzeug
+jeden Tab ansteuern, ohne zu klicken.
+
+**Rot-Nachweis vor der Umsetzung (2026-10-07):** Host-Tests in `tabs.rs`
+gegen eine leere Hülle: 6 von 6 rot. Screenshots je Fragment bei 800x480
+und 1000x1300 (`--mute 2`): Die App ignoriert das Fragment, alle zeigen
+dieselbe Einzelseite mit Titelzeile, Gauge, DDS-Bedienfeld und Übersicht.
+
+| AK | Prüfart | Stand vor der Umsetzung |
+|----|---------|-------------------------|
+| AK1 Tab-Leiste | Rust (Reihenfolge, Beschriftung) + Screenshot je Tab | rot: keine Tab-Leiste |
+| AK1a Start-Tab Gauge | Rust (Default, fehlendes/unbekanntes Fragment) + Screenshot ohne Fragment | rot: Hülle; keine Tabs |
+| AK2 Gauge ohne Scrollen | Screenshot 800x480 `#gauge` | rot: Gauge passt zwar ganz in 800x480, aber ohne Tab-Leiste (AK1) |
+| AK3 Übersicht ohne Scrollen | Screenshot 800x480 `#uebersicht` | rot: Übersicht bei 800x480 gar nicht sichtbar |
+| AK4 DDS-Steuerung | Screenshot 800x480 `#dds` für Eingabe, Button, bestätigte Frequenz, reservierten Bereich; **von Hand** für den Hinweistext nach einem Setz-Vorgang (das Bedienfeld zeigt nur Ergebnisse eigener Klicks, der Screenshot kann nicht klicken) | rot: Bedienfeld bei 480 px angeschnitten, kein reservierter Bereich |
+| AK5 Touch-Ziele ca. 44 px | Screenshot, Pixel ausgemessen (Tabs, Eingabefeld, "Setzen") | rot: Eingabefeld und "Setzen" ca. 36 px hoch; keine Tabs |
+| AK6 Kein Zustandsverlust | **von Hand** im Desktop-Browser (Wert eintippen und setzen, Tab wechseln, zurück); abgesichert durch die Bauweise (alle Ansichten bleiben gemountet) | nicht anwendbar (keine Tabs) |
+| AK7 Große Fenster | Screenshot 1000x1300 je Tab | rot: alles sichtbar, aber keine Tabs |
+| AK8 Echtes Gerät | **von Hand** im Labor | offen |
+
+**Gauge im ausgeblendeten Zustand:** Das Gauge darf nicht mit falscher
+Größe erscheinen, wenn es ausgeblendet gerendert wurde und erst später
+sichtbar wird. Das Screenshot-Werkzeug kann keinen Tab-Wechsel auslösen;
+per Screenshot geprüft wird deshalb das Laden direkt in jedem Tab
+(`#gauge`, `#uebersicht`, `#dds`). Der Wechsel zurück zum Gauge nach dem
+Laden in einem anderen Tab ist Teil des Handtests AK6.
+
 ## Explizit außerhalb des Scopes
 
 - Neue Instrumente, neue Kanäle oder Stellglieder (nur Neuanordnung des

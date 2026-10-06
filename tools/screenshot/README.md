@@ -11,11 +11,12 @@ Vom Repo-Root:
 ```bash
 tools/screenshot/shot.sh                      # 800x480, alle Module antworten
 tools/screenshot/shot.sh --mute 2             # DCG stumm -> Übersicht zeigt "veraltet"
+tools/screenshot/shot.sh --tab uebersicht --mute 2   # App mit /#uebersicht laden
 tools/screenshot/shot.sh --size 1000x1300 --out /tmp/gross.png
 tools/screenshot/shot.sh --help               # alle Optionen
 ```
 
-Ergebnis: `target/screenshots/frontend-<B>x<H>.png` (Default). `target/`
+Ergebnis: `target/screenshots/frontend-<B>x<H>[-<tab>].png` (Default). `target/`
 ist in `.gitignore` - Screenshots landen damit nie versehentlich im Repo.
 Am Ende gibt das Skript zusätzlich die Poll-Statistik aus
 (`GET /api/poll`).
