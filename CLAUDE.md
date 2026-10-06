@@ -59,11 +59,15 @@ crates/
   octlab-transport   Verbindungsebene: BoardConnection-Trait (seriell/TCP/simuliert)
   octlab-protocol    Kommando/Nachricht: c't-Lab-ASCII-Syntax parsen & bauen
   octlab-devices     Geräteebene: typisierte Module (Dds, künftig Dcg/Div/AdaIo/...)
-  octlab-lab         Umgebungsebene: Lab-Actor, Sync-Query mit Timeout, Broadcast
+  octlab-lab         Umgebungsebene: Lab-Actor (Aufträge seriell), Sync-Query
+                     mit Timeout, Broadcast, Poll-Zyklus über eine feste
+                     Kanalliste mit Kanalzustand/Änderungsstrom (Spec 0005)
   octlab-server      Axum: HTTP/WebSocket, nutzt octlab-lab. lib.rs (Router-
                      Aufbau, `build_app()`) + main.rs (dünner CLI-Wrapper via
                      clap) getrennt, damit apps/desktop denselben Router-Code
-                     nutzen kann, ohne CLI-Parsing mitzuschleppen.
+                     nutzen kann, ohne CLI-Parsing mitzuschleppen. Die
+                     Kanalliste der Übersicht (12 Kanäle, Spec 0005) ist
+                     Server-Konfiguration in `src/channels.rs`.
 apps/
   desktop/          Tauri 2.x, bündelt octlab-server intern (Tokio-Task im
                      selben Prozess, kein Kindprozess) + zeigt dessen UI in
@@ -78,7 +82,10 @@ apps/
                      plus ein Bedienfeld für die DDS-Frequenz (Adresse 4,
                      Subkanal 0; Setzen via `POST /api/channel/{addr}/{sub}`,
                      zeigt NUR die zurückgelesene Frequenz, nie den
-                     Wunschwert - Spec `specs/0003-dds-frequenz-setzen.md`).
+                     Wunschwert - Spec `specs/0003-dds-frequenz-setzen.md`)
+                     und eine Kanalübersicht (Tabelle mit Wert, Einheit,
+                     "veraltet"/"kein Wert"; Kanalliste per
+                     `GET /api/channels`, Spec `specs/0005-mehrkanal-ansicht.md`).
                      octlab-server serviert die Trunk-Ausgabe
                      (`apps/web/dist`) als Fallback-Route - Browser UND
                      Tauri-WebView zeigen dasselbe Frontend. Spec:
@@ -145,6 +152,26 @@ Styling-Wahl sobald die UI über ein einzelnes Instrument hinauswächst
 - **Ein Actor pro Verbindung** (`Lab::spawn`), der die Connection exklusiv
   besitzt. Kein Mutex um die Connection selbst – das bildet die reale
   Hardware-Topologie ab (ein geteilter OptoBus).
+- **Der Actor arbeitet Aufträge EINZELN ab** (seit Spec 0005): Senden,
+  Abfrage, Setzen, Setz-Sequenz mit Rücklesen laufen jeweils vollständig
+  durch, inklusive Warten auf die Antwort, bevor der nächste Auftrag
+  beginnt. Aufträge von außen haben Vorrang vor den eigenen
+  Poll-Abfragen. Keine Bus-Sperre außerhalb des Actors - Atomarität der
+  Setz-Sequenz und "Poll-Zyklen überlappen nie" folgen aus dieser
+  Struktur. Konsequenz auch OHNE Polling (`Lab::spawn`): gleichzeitige
+  `query()`-Aufrufe warten aufeinander (bis zu 500 ms je vorausgehendem
+  Auftrag); das 500-ms-Timeout zählt ab dem Senden, nicht ab dem Aufruf.
+  Die Antwort-Zuordnung läuft über den Kanal, auf den der Actor gerade
+  wartet; jede andere gültige Zeile ist unaufgefordert (wird geloggt, an
+  `subscribe()` verteilt, ändert aber keinen Kanalzustand).
+- **`/ws`-Vertrag (Spec 0005):** beim Verbinden ein Snapshot aller schon
+  abgefragten Kanäle der Kanalliste, danach NUR Änderungen von Wert oder
+  Veraltet-Markierung. Format aus Spec 0002 (`address`, `subchannel`,
+  `value`, `status_text`) plus `stale`; `value: null` = Kanal hat nie
+  geantwortet (ein 0002-Client verwirft das, statt einen falschen Wert zu
+  zeigen); `status_text` ist immer `null`. Unaufgeforderte Zeilen und
+  Quittungen erscheinen NICHT über `/ws`. Der rohe Nachrichtenstrom
+  bleibt über `Lab::subscribe()` verfügbar.
 - **`query()` gibt `Option<f64>` zurück, nicht `f64`** (JLab gibt bei Timeout
   0.0 zurück – das ist von einem validen Nullmesswert nicht unterscheidbar,
   bewusst vermieden).
@@ -185,6 +212,10 @@ crates/octlab-lab/tests/
                                        # ohne Rust-Kenntnisse, laufen als echte
                                        # `cargo test` gegen den Lab-Actor.
   cucumber.rs                         # Step-Definitionen dazu.
+  polling_features/*.feature          # Polling-Features (Spec 0005), eigener Runner:
+  polling.rs                          # pausierte Tokio-Uhr (`start_paused`), Module
+                                       # über `SimBus`. Getrennt, weil die pausierte
+                                       # Uhr für die ganze Runtime gilt.
 ```
 
 Aktueller Modellstand: Domain `optobusctlab` → Bounded Context
@@ -207,7 +238,10 @@ ist keine Aggregat-Tatsache, sondern eine technische Eigenschaft der
 Lab-Actor-API (dort gibt es auf Aggregat-Ebene ohnehin keinen Query-Command).
 
 **Status Cucumber-Tests:** grün (`cargo test -p octlab-lab --test cucumber`,
-4 Features, 8 Szenarien, 32 Steps). `cucumber` 0.21 verlangt
+4 Features, 8 Szenarien, 32 Steps; `cargo test -p octlab-lab --test
+polling`, 4 Features, 25 Szenarien). Pausierte Zeit braucht das
+tokio-Feature `test-util` - nur unter `[dev-dependencies]` von
+`octlab-transport`, `octlab-lab` und `octlab-server`. `cucumber` 0.21 verlangt
 `#[derive(cucumber::World)]` statt eines von Hand geschriebenen
 `impl World for LabWorld` (das ältere `#[derive(WorldInit)]`-Muster wurde
 in 0.21 ersetzt) - der `LabWorld`-Struct trägt das Derive jetzt.
@@ -402,6 +436,20 @@ cargo test --workspace          # alle Crates (octlab-server zieht axum, dauert 
 cargo test -p octlab-lab         # schneller Kernel-Test während der Entwicklung
 cargo run -p octlab-server       # startet auf :3000, läuft OHNE Hardware (SimulatedConnection)
 curl localhost:3000/health
+curl localhost:3000/api/channels # Kanalliste (Spec 0005)
+curl localhost:3000/api/poll     # Poll-Statistik: Intervall, letzte Zykluszeit, Überläufe
+```
+
+Das Polling über die Kanalliste läuft auf JEDER Verbindungsart, auch in
+der Simulation (dort antwortet niemand: erster Zyklus 12 x 500 ms mit einer
+Überlauf-Warnung, danach alle Kanäle "veraltet" im 5-s-Backoff).
+Intervall: `--poll-interval-ms` (Default 1000, 0 = aus), in `apps/desktop`
+Env-Var `OCTLAB_POLL_INTERVAL_MS`.
+
+```bash
+# Simulator mit stummem DCG, Server dagegen - Übersicht zeigt DCG "veraltet":
+cargo run --example fake_xport -p octlab-transport -- --mute 2
+cargo run -p octlab-server -- --connection tcp --addr 127.0.0.1:15001
 ```
 
 Cross-Compile-Ziele (noch nicht in CI eingerichtet):
@@ -451,11 +499,9 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    damalige Wegwerf-HTML (`crates/octlab-server/static/index.html` samt
    `/`-Route) ist mit Spec 0002 wieder entfernt, `octlab-server` serviert
    jetzt die Trunk-Ausgabe von `apps/web` (siehe "Frontend-Dev-Workflow").
-   Von dem Provisorium übrig ist nur noch der 500ms-Poll
-   (`poll_div_provisional` in `octlab-server/src/lib.rs`, sendet `1:0?`,
-   nur aktiv bei `--connection tcp`) – der bleibt der Taktgeber, bis eine
-   echte Subscription-/Sweep-Logik existiert, und fliegt dann raus (so im
-   Funktionskommentar markiert).
+   Der danach noch übrige 500ms-Poll (`poll_div_provisional`) ist mit
+   Spec 0005 entfallen - Taktgeber ist seither der Poll-Zyklus des
+   Lab-Actors über die Kanalliste (Schritt 10).
 4. ~~`apps/desktop` (Tauri): minimales Server-Embedding-Gerüst~~ –
    **erledigt, ebenfalls Provisorium**. `octlab-server` wurde dafür in
    `lib.rs` (Router-Aufbau, `pub async fn build_app()`) und `main.rs`
@@ -468,7 +514,8 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    `http://localhost:3000` (`WebviewWindowBuilder`, `WebviewUrl::External` -
    `tauri.conf.json` deklariert bewusst kein Fenster, `frontendDist` zeigt
    direkt auf die URL statt auf ein gebündeltes Verzeichnis). Config bewusst
-   minimal: zwei Env-Vars (`OCTLAB_CONNECTION`, `OCTLAB_ADDR`), kein `clap`
+   minimal: Env-Vars (`OCTLAB_CONNECTION`, `OCTLAB_ADDR`, seit Spec 0005
+   `OCTLAB_POLL_INTERVAL_MS`), kein `clap`
    in der Desktop-App (keine sinnvolle CLI für ein GUI-Programm), Default
    `simulation`. Braucht einen Platzhalter-Icon (`apps/desktop/icons/icon.png`,
    128×128 RGBA - `tauri::generate_context!()` bricht sonst zur Compile-Zeit
@@ -539,6 +586,31 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
    entpackt das Image in ein Temp-Verzeichnis und führt es von dort direkt
    aus, umgeht FUSE damit komplett. Kein Projekt-Code nötig, nur
    Nutzer-Doku (README).
+10. **Mehrkanal-Ansicht, rein lesend - IN ARBEIT** (Spec 0005, Status "In
+    Arbeit" bis AK12, Live-Beweis im Labor). Umgesetzt und grün:
+    - `octlab-lab`: Actor arbeitet Aufträge seriell (siehe
+      Design-Entscheidungen); `Lab::spawn_with_polling(conn, PollConfig {
+      channels, interval })` (Intervall 0 = aus; Timeout 500 ms →
+      "veraltet", letzter Wert bleibt, erneuter Versuch frühestens nach
+      5 s; Zyklen überlappen nie, verpasste Takte werden nicht
+      nachgeholt, eine Warnung pro Überlauf-Episode);
+      `Lab::set_and_read_back` (Setzen, Quittung, Rücklesen atomar; liest
+      ABWEICHEND von Spec 0003 auch ohne Quittung zurück, bis 500 + 500
+      ms); `Lab::subscribe_channels` (Snapshot + Änderungsstrom, atomar
+      zueinander); `Lab::poll_stats`. `Lab::spawn` bleibt ohne Polling.
+    - `octlab-server`: `poll_div_provisional` entfernt; Kanalliste (12
+      Kanäle) in `src/channels.rs`; `/ws` nach obigem Vertrag;
+      `GET /api/channels`, `GET /api/poll`; `POST /api/channel/...` über
+      `set_and_read_back` - ohne Quittung, aber mit Rücklesewert: 504 MIT
+      Wert (`"error": "keine Quittung (Timeout), Rücklesewert liegt vor"`),
+      weder noch: 504 ohne Wert.
+    - `apps/web`: Kanalübersicht; `Measurement.value` optional, `stale`.
+    - `octlab-transport`: `SimBus` (simulierte Module für Tests und
+      `fake_xport`: mute, drop_acks, Antwortverzögerung, Einspeisen,
+      Sende-Log mit Zeitstempeln).
+    Offen: die Messpunkte am Ende der Spec (Kanalbelegung, Einheiten,
+    Antwortzeiten am echten Gerät - bis dahin ist außer DDS 4:0 alles
+    UNVERIFIZIERT) und AK12.
 
 ## Backlog (kein aktiver Schritt, nur vorgemerkt)
 
@@ -548,7 +620,7 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
   numerisch zurück, `ChannelKey` muss also so oder so die numerische
   Subkanal-Nummer als kanonische Identität führen. Mnemonics beim Senden
   lösen das Firmware-Drift-Problem an der jetzigen Architektur NICHT (ein
-  verschobener Subkanal bricht die Pending-Map-Korrelation trotzdem), sie
+  verschobener Subkanal bricht die Antwort-Zuordnung nach Kanal trotzdem), sie
   wären nur kosmetisch. Erst relevant, wenn Firmware-Drift real zuschlägt
   UND wir bereit sind, eine dynamische Syntax-Auflösung zur Laufzeit zu
   bauen (Subkanal-Zuordnung von der Hardware selbst abfragen statt statisch
