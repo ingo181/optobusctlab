@@ -182,6 +182,36 @@ dieselbe Einzelseite mit Titelzeile, Gauge, DDS-Bedienfeld und Übersicht.
      erschien in voller Größe und lief live (damit auch die Prüfung "Gauge
      im ausgeblendeten Zustand", siehe unten, von Hand bestätigt).
 
+- **Screenshot-Befunde nach Schritt 4** (2026-10-07, Stand `41ac399`,
+  `tools/screenshot/shot.sh --size <BxH> --tab <fragment> --mute 2`).
+  Maße im gerenderten PNG ausgemessen (Headless-Firefox, 1 Bildpixel =
+  1 CSS-Pixel), nicht nur aus dem CSS abgeleitet:
+
+  | Element (800x480) | gemessen | Lage |
+  |---|---|---|
+  | Tab-Leiste | 52 px hoch | y 0-51 |
+  | Tab "Gauge" | 81 x 44 px | x 140-220, y 4-47 |
+  | Tab "Übersicht" | 104 x 44 px | x 229-332, y 4-47 |
+  | Tab "DDS-Steuerung" | 148 x 44 px | x 341-488, y 4-47 |
+  | Eingabefeld | 266 x 44 px | x 129-394, y 77-120 |
+  | Button "Setzen" | 92 x 44 px | x 403-494, y 77-120 |
+
+  Abstände: je 8 px zwischen den Tabs und zwischen Eingabefeld und
+  "Setzen" - kein Touch-Ziel berührt ein anderes. Bei 1000x1300 identische
+  Größen (Inhalt nur horizontal verschoben).
+
+  | AK | Befund |
+  |---|---|
+  | AK1 | erfüllt: Tab-Leiste in jeder Ansicht, aktiver Tab hell hinterlegt (Rust-Tests Reihenfolge/Beschriftung grün) |
+  | AK1a | erfüllt: ohne Fragment ist Gauge aktiv (Rust-Tests grün, Screenshot) |
+  | AK2 | erfüllt: Gauge vollständig sichtbar, unterste Inhaltszeile y = 438 (inkl. Kartenschatten), 41 px Rand |
+  | AK3 | erfüllt: Kopf, alle 12 Zeilen, "veraltet" und Verifikationshinweis sichtbar, unterste Inhaltszeile y = 448, 31 px Rand; Schrift 15,2 px |
+  | AK4 | per Screenshot erfüllt: Eingabefeld, "Setzen", "noch nichts gesetzt", Beschriftung und der reservierte Bereich (160 x 200 px, gestrichelt) sichtbar, unterste Inhaltszeile y = 259, 220 px frei. **Offen, von Hand:** Hinweistext nach einem Setz-Vorgang (Screenshot kann nicht klicken; Platz ist reichlich vorhanden) |
+  | AK5 | erfüllt: alle Touch-Ziele mindestens 44 x 44 px (Tabelle oben) |
+  | AK6 | erfüllt (Handtest, siehe oben) |
+  | AK7 | erfüllt: bei 1000x1300 alle drei Ansichten vollständig, nichts abgeschnitten |
+  | AK8 | offen (Labor) |
+
 **Gauge im ausgeblendeten Zustand:** Das Gauge darf nicht mit falscher
 Größe erscheinen, wenn es ausgeblendet gerendert wurde und erst später
 sichtbar wird. Das Screenshot-Werkzeug kann keinen Tab-Wechsel auslösen;
