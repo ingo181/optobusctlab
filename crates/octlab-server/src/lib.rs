@@ -269,7 +269,17 @@ async fn set_channel(
         subchannel: SubChannel(sub),
     };
 
-    let result = state.lab.set_and_read_back(key, request.value).await;
+    // VORLÄUFIG (Spec 0008, Schritt 2): Die Fehlerfälle "keine Verbindung"
+    // und "Verbindung während des Setzens verloren" werden wie bisher als
+    // "keine Antwort" (504 ohne Wert) gemeldet. Die richtige 503-Antwort
+    // kommt mit Tests in Schritt 3.
+    let result = match state.lab.set_and_read_back(key, request.value).await {
+        Ok(result) => result,
+        Err(_) => octlab_lab::SetReadBack {
+            ack: None,
+            readback: None,
+        },
+    };
     let value = result.readback;
     match result.ack {
         None => {

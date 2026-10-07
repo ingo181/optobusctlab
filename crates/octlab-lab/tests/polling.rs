@@ -17,9 +17,11 @@
 //! Zeitstempeln ist die Grundlage fast aller Then-Schritte.
 
 use cucumber::{given, then, when, World};
-use octlab_lab::{ChannelUpdate, Lab, PollConfig, SetReadBack};
+use octlab_lab::{
+    Ack, ChannelUpdate, ConnectionState, Lab, PollConfig, SetReadBack, SetReadBackError,
+};
 use octlab_protocol::{ChannelKey, Message, ModuleAddress, SubChannel};
-use octlab_transport::{SimBus, SimulatedConnection};
+use octlab_transport::{ConnectionEvent, IoAttempt, SimBus, SimulatedConnection};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time::Instant;
@@ -50,8 +52,12 @@ struct PollWorld {
     snapshot: Vec<ChannelUpdate>,
     set_requested_at: Option<Instant>,
     set_finished_at: Option<Instant>,
-    set_result: Option<SetReadBack>,
+    set_result: Option<Result<SetReadBack, SetReadBackError>>,
     timeout_at: Option<Instant>,
+    /// Zeitpunkt des letzten Verbindungsabbruchs durch die Gegenseite.
+    dropped_at: Option<Instant>,
+    /// Ergebnis eines expliziten Starts (AK8 Spec 0008): Fehlertext bei Err.
+    spawn_error: Option<String>,
 }
 
 impl Default for PollWorld {
@@ -73,6 +79,8 @@ impl Default for PollWorld {
             set_finished_at: None,
             set_result: None,
             timeout_at: None,
+            dropped_at: None,
+            spawn_error: None,
         }
     }
 }
@@ -115,7 +123,9 @@ impl PollWorld {
     }
 
     async fn ensure_spawned(&mut self) {
-        if self.lab.is_some() {
+        // Schon gestartet - oder ein expliziter Start ist gescheitert (Spec
+        // 0008 AK8): dann nicht noch einmal verbinden.
+        if self.lab.is_some() || self.spawn_error.is_some() {
             return;
         }
         let connection = self.connection.take().expect("Connection verbraucht");
@@ -670,7 +680,11 @@ fn then_set_duration(world: &mut PollWorld, set_line: String, ms: u64) {
 
 #[then(expr = "meldet die Setz-Sequenz Quittung {string} und Rücklesewert {float}")]
 fn then_set_ok(world: &mut PollWorld, status: String, value: f64) {
-    let result = world.set_result.clone().expect("kein Setz-Ergebnis");
+    let result = world
+        .set_result
+        .clone()
+        .expect("kein Setz-Ergebnis")
+        .expect("Setz-Sequenz meldete einen Verbindungsfehler");
     let ack = result.ack.as_ref().expect("keine Quittung");
     assert_eq!(ack.status_text.as_deref(), Some(status.as_str()));
     assert_eq!(result.readback, Some(value));
@@ -678,14 +692,22 @@ fn then_set_ok(world: &mut PollWorld, status: String, value: f64) {
 
 #[then(expr = "meldet die Setz-Sequenz keine Quittung und Rücklesewert {float}")]
 fn then_set_no_ack_with_readback(world: &mut PollWorld, value: f64) {
-    let result = world.set_result.clone().expect("kein Setz-Ergebnis");
+    let result = world
+        .set_result
+        .clone()
+        .expect("kein Setz-Ergebnis")
+        .expect("Setz-Sequenz meldete einen Verbindungsfehler");
     assert_eq!(result.ack, None);
     assert_eq!(result.readback, Some(value));
 }
 
 #[then("meldet die Setz-Sequenz keine Quittung und keinen Rücklesewert")]
 fn then_set_nothing(world: &mut PollWorld) {
-    let result = world.set_result.clone().expect("kein Setz-Ergebnis");
+    let result = world
+        .set_result
+        .clone()
+        .expect("kein Setz-Ergebnis")
+        .expect("Setz-Sequenz meldete einen Verbindungsfehler");
     assert_eq!(result.ack, None);
     assert_eq!(result.readback, None);
 }
@@ -719,6 +741,232 @@ fn then_cycle_time(world: &mut PollWorld, cycle_ms: u64, interval_ms: u64) {
     let stats = world.lab().poll_stats();
     assert_eq!(stats.last_cycle, Some(Duration::from_millis(cycle_ms)));
     assert_eq!(stats.interval, Duration::from_millis(interval_ms));
+}
+
+// ---------------------------------------------------------------------------
+// Spec 0008: Verbindungsverlust
+// ---------------------------------------------------------------------------
+
+#[when("die Gegenseite die Verbindung abbricht")]
+async fn when_peer_drops(world: &mut PollWorld) {
+    world.ensure_spawned().await;
+    world.dropped_at = Some(Instant::now());
+    world.bus.drop_connection();
+    // Dem Actor Gelegenheit geben, den Abbruch zu bemerken.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+}
+
+#[given("die Gegenseite nimmt keine Verbindung an")]
+fn given_refuse(world: &mut PollWorld) {
+    world.bus.refuse_connections(true);
+}
+
+#[when("die Gegenseite keine Verbindung mehr annimmt")]
+fn when_refuse(world: &mut PollWorld) {
+    world.bus.refuse_connections(true);
+}
+
+#[when("die Gegenseite wieder Verbindungen annimmt")]
+fn when_accept(world: &mut PollWorld) {
+    world.bus.refuse_connections(false);
+}
+
+#[when("das Lab gestartet wird")]
+async fn when_lab_started(world: &mut PollWorld) {
+    let connection = world.connection.take().expect("Connection verbraucht");
+    let config = PollConfig::new(world.channels.clone());
+    match Lab::spawn_with_polling(Box::new(connection), config).await {
+        Ok(lab) => world.lab = Some(lab),
+        Err(err) => world.spawn_error = Some(err.to_string()),
+    }
+}
+
+#[when(
+    expr = "ich {string} auf {float} setze und zurücklese, während die Verbindung nach {int} ms abbricht"
+)]
+async fn when_set_with_drop(world: &mut PollWorld, channel: String, value: f64, ms: u64) {
+    world.ensure_spawned().await;
+    let bus = world.bus.clone();
+    let lab = world.lab.as_ref().unwrap();
+    world.set_requested_at = Some(Instant::now());
+    let drop_later = async {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        bus.drop_connection();
+        Instant::now()
+    };
+    let (result, dropped_at) =
+        tokio::join!(lab.set_and_read_back(key(&channel), value), drop_later);
+    world.set_finished_at = Some(Instant::now());
+    world.dropped_at = Some(dropped_at);
+    world.set_result = Some(result);
+}
+
+#[when("die Verbindung wiederhergestellt ist")]
+async fn when_reconnected(world: &mut PollWorld) {
+    world
+        .wait_until("Verbindung wiederhergestellt", |w| {
+            w.lab().poll_stats().connection == ConnectionState::Connected
+        })
+        .await;
+}
+
+#[then(expr = "erfolgten Verbindungsversuche bei {string} s nach dem Abbruch")]
+fn then_connect_times(world: &mut PollWorld, offsets: String) {
+    let dropped = world.dropped_at.expect("kein Abbruch");
+    let actual: Vec<u64> = world
+        .bus
+        .connection_log()
+        .into_iter()
+        .filter(|(at, e)| *at >= dropped && matches!(e, ConnectionEvent::Connect { .. }))
+        .map(|(at, _)| (at - dropped).as_secs())
+        .collect();
+    let expected: Vec<u64> = list(&offsets).map(|o| o.parse().unwrap()).collect();
+    assert_eq!(actual, expected);
+}
+
+#[then(expr = "der erste Verbindungsversuch nach dem Abbruch erfolgte nach {int} s")]
+fn then_first_attempt_after(world: &mut PollWorld, secs: u64) {
+    let dropped = world.dropped_at.expect("kein Abbruch");
+    let first = world
+        .bus
+        .connection_log()
+        .into_iter()
+        .find(|(at, e)| *at >= dropped && matches!(e, ConnectionEvent::Connect { .. }))
+        .expect("kein Verbindungsversuch")
+        .0;
+    assert_eq!(first - dropped, Duration::from_secs(secs));
+}
+
+#[then("wurde vor jedem Verbindungsversuch die vorige Session geschlossen")]
+fn then_disconnect_before_connect(world: &mut PollWorld) {
+    let log = world.bus.connection_log();
+    let mut session_open = false;
+    for (at, event) in &log {
+        match event {
+            ConnectionEvent::Connect { accepted } => {
+                assert!(
+                    !session_open,
+                    "Connect bei {at:?} ohne vorheriges Schließen: {log:?}"
+                );
+                session_open = *accepted;
+            }
+            ConnectionEvent::Disconnect => session_open = false,
+            ConnectionEvent::Dropped => {}
+        }
+    }
+}
+
+#[then(expr = "ist der Verbindungszustand {string} mit {int} Versuchen")]
+fn then_connection_state(world: &mut PollWorld, state: String, attempts: u32) {
+    let stats = world.lab().poll_stats();
+    let expected = match state.as_str() {
+        "getrennt" => ConnectionState::Disconnected,
+        "verbunden" => ConnectionState::Connected,
+        other => panic!("unbekannter Zustand {other}"),
+    };
+    assert_eq!(
+        (stats.connection, stats.reconnect_attempts),
+        (expected, attempts)
+    );
+}
+
+#[then("meldet die Setz-Sequenz \"keine Verbindung\" ohne Wartezeit")]
+fn then_set_not_connected(world: &mut PollWorld) {
+    let result = world.set_result.clone().expect("kein Setz-Ergebnis");
+    assert_eq!(result, Err(SetReadBackError::NotConnected));
+    let waited = world.set_finished_at.unwrap() - world.set_requested_at.unwrap();
+    assert_eq!(waited, Duration::ZERO, "Setzen wartete {waited:?}");
+}
+
+#[then("meldet die Setz-Sequenz Verbindungsverlust ohne Quittung")]
+fn then_set_lost_without_ack(world: &mut PollWorld) {
+    let result = world.set_result.clone().expect("kein Setz-Ergebnis");
+    assert_eq!(result, Err(SetReadBackError::ConnectionLost { ack: None }));
+}
+
+#[then(expr = "meldet die Setz-Sequenz Verbindungsverlust mit Quittung {string}")]
+fn then_set_lost_with_ack(world: &mut PollWorld, status: String) {
+    let result = world.set_result.clone().expect("kein Setz-Ergebnis");
+    assert_eq!(
+        result,
+        Err(SetReadBackError::ConnectionLost {
+            ack: Some(Ack {
+                code: 0.0,
+                status_text: Some(status),
+            })
+        })
+    );
+}
+
+#[then(expr = "wurde {string} insgesamt {int} Mal gesendet")]
+fn then_sent_times_total(world: &mut PollWorld, line: String, n: usize) {
+    let sent = world.bus.sent();
+    let count = sent.iter().filter(|(_, l)| *l == line).count();
+    assert_eq!(count, n, "Sende-Log: {sent:?}");
+}
+
+#[then("ist jeder Kanal als veraltet markiert und behält seinen Wert")]
+fn then_all_stale_keep_values(world: &mut PollWorld) {
+    let states = world.lab().subscribe_channels().0;
+    assert!(!states.is_empty());
+    for state in &states {
+        assert!(state.stale && state.value.is_some(), "Zustand {state:?}");
+    }
+}
+
+#[then(expr = "meldete der Änderungsstrom für {string} zuletzt {string}")]
+fn then_last_change(world: &mut PollWorld, channel: String, expected: String) {
+    world.drain_changes();
+    let channel = key(&channel);
+    let last = world
+        .change_log
+        .iter()
+        .rev()
+        .find(|u| u.key == channel)
+        .map(|u| (u.value, u.stale))
+        .expect("keine Meldung");
+    let expected = match expected.strip_suffix(" veraltet") {
+        Some(v) => (Some(v.parse().unwrap()), true),
+        None => (Some(expected.parse().unwrap()), false),
+    };
+    assert_eq!(last, expected);
+}
+
+#[then("ist der Start mit einem Verbindungsfehler gescheitert")]
+fn then_spawn_failed(world: &mut PollWorld) {
+    assert!(world.spawn_error.is_some(), "Start gelang unerwartet");
+}
+
+#[then(expr = "gab es insgesamt genau {int} Verbindungsversuch(e)")]
+fn then_connect_count(world: &mut PollWorld, n: usize) {
+    let log = world.bus.connection_log();
+    let connects = log
+        .iter()
+        .filter(|(_, e)| matches!(e, ConnectionEvent::Connect { .. }))
+        .count();
+    assert_eq!(connects, n, "Protokoll: {log:?}");
+}
+
+/// Zählt UND prüft Zeitpunkte: Mit pausierter Uhr läuft eine
+/// Dauerschleife komplett im selben virtuellen Zeitpunkt ab - ein reiner
+/// Zeitvergleich würde sie übersehen. Erlaubt ist genau der eine Lesevorgang,
+/// der den Abbruch bemerkt.
+#[then("wurde die getrennte Verbindung höchstens einmal gelesen, beim Abbruch selbst")]
+fn then_io_only_at_drop(world: &mut PollWorld) {
+    let dropped = world.dropped_at.expect("kein Abbruch");
+    let io: Vec<(Instant, IoAttempt)> = world.bus.io_while_disconnected();
+    assert!(
+        io.len() <= 1,
+        "{} Lese-/Sendeversuche auf getrennter Verbindung",
+        io.len()
+    );
+    assert!(
+        io.iter().all(|(at, _)| *at == dropped),
+        "Lese-/Sendeversuche nach dem Abbruch: {:?}",
+        io.iter()
+            .map(|(at, a)| (*at - dropped, *a))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::main(flavor = "current_thread", start_paused = true)]

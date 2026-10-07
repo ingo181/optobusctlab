@@ -48,6 +48,22 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 /// Frühester erneuter Versuch für einen Kanal nach einem Timeout (Spec 0005).
 pub const POLL_BACKOFF: Duration = Duration::from_secs(5);
 
+/// Wiederverbindung nach einem Abbruch im Betrieb (Spec 0008, AK4): Abstand
+/// vor dem ersten Versuch, danach verdoppelt bis höchstens
+/// [`RECONNECT_BACKOFF_MAX`]. Der Abstand zählt ab dem ENDE des vorigen
+/// Versuchs. ANNAHME, UNVERIFIZIERT - ob 1 s nach dem Schließen am XPort
+/// reicht, klärt Messpunkt 1 der Spec (der XPort nimmt eine neue Session
+/// erst an, wenn die alte abgebaut ist).
+pub const RECONNECT_BACKOFF_START: Duration = Duration::from_secs(1);
+/// Obergrenze des Wiederverbindungs-Abstands (Spec 0008). ANNAHME,
+/// UNVERIFIZIERT.
+pub const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// Zeitlimit für einen ganzen Wiederverbindungsversuch einschließlich
+/// `disconnect()` der alten Session (Spec 0008). ANNAHME, UNVERIFIZIERT -
+/// gewählt wie das Zeitlimit beim Serverstart; gegen einen nicht
+/// erreichbaren Host kann `connect()` sonst sehr lange hängen.
+pub const RECONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Ergebnis eines quittierten Setz-Vorgangs ([`Lab::set`]).
 ///
 /// Bewusst drei unterscheidbare Fälle statt `Option`/`bool` (Spec 0003,
@@ -68,6 +84,33 @@ pub enum SetOutcome {
     /// Keine Quittung innerhalb des Timeouts - dritter Fall neben Erfolg
     /// und Ablehnung, analog zur `Option<f64>`-Entscheidung bei `query()`.
     NoReply,
+    /// Verbindung war schon getrennt, das Kommando wurde NIE gesendet
+    /// (Spec 0008, AK3).
+    NotConnected,
+    /// Verbindung brach während oder nach dem Senden ab - ob die Anlage den
+    /// Wert übernommen hat, ist unbekannt (Spec 0008, AK3).
+    ConnectionLost,
+}
+
+/// Fehlerfälle von [`Lab::set_and_read_back`] (Spec 0008, AK3). Bewusst
+/// zwei getrennte Fälle: Nur `NotConnected` heißt "sicher nicht bei der
+/// Anlage angekommen".
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetReadBackError {
+    /// Verbindung war getrennt, bevor das erste Byte gesendet wurde.
+    NotConnected,
+    /// Abbruch während des Sendens, danach oder vor/während des Rücklesens:
+    /// Zustand unbekannt, verbindlich ist erst der nächste Poll. Enthält
+    /// die Quittung, falls sie schon eingetroffen war.
+    ConnectionLost { ack: Option<Ack> },
+}
+
+/// Verbindungszustand des Lab-Actors (Spec 0008, AK6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConnectionState {
+    #[default]
+    Connected,
+    Disconnected,
 }
 
 /// Konfiguration des Poll-Zyklus (Spec 0005): feste Kanalliste plus
@@ -129,6 +172,10 @@ pub struct PollStats {
     /// Anzahl der Episoden, in denen Zyklen länger als das Intervall
     /// dauerten (pro Episode wird genau einmal gewarnt).
     pub overrun_episodes: u64,
+    /// Verbindungszustand (Spec 0008, AK6).
+    pub connection: ConnectionState,
+    /// Wiederverbindungsversuche seit dem letzten Abbruch, 0 wenn verbunden.
+    pub reconnect_attempts: u32,
 }
 
 /// Auftrag an den Actor. Das Ergebnis geht über einen `oneshot`-Kanal an
@@ -147,8 +194,53 @@ enum Job {
     SetAndReadBack {
         key: ChannelKey,
         value: f64,
-        reply: oneshot::Sender<SetReadBack>,
+        reply: oneshot::Sender<Result<SetReadBack, SetReadBackError>>,
     },
+}
+
+impl Job {
+    /// Beantwortet einen Auftrag, OHNE ihn zu senden: Die Verbindung ist
+    /// getrennt (Spec 0008, AK3). Der Auftrag verfällt - er wird nach einer
+    /// Wiederverbindung NICHT nachgeholt (ein verspätetes Setzen wäre bei
+    /// einem Stellglied gefährlich).
+    fn reject_not_connected(self) {
+        match self {
+            Job::Send(line) => {
+                tracing::debug!(%line, "keine Verbindung - Kommando verworfen");
+            }
+            Job::Query { reply, .. } => {
+                let _ = reply.send(None);
+            }
+            Job::Set { reply, .. } => {
+                let _ = reply.send(SetOutcome::NotConnected);
+            }
+            Job::SetAndReadBack { reply, .. } => {
+                let _ = reply.send(Err(SetReadBackError::NotConnected));
+            }
+        }
+    }
+}
+
+/// Verbindungszustand im Actor (Spec 0008).
+enum Link {
+    Connected,
+    Disconnected {
+        /// Bisherige Versuche seit dem Abbruch.
+        attempts: u32,
+        /// Abstand vor dem nächsten Versuch.
+        backoff: Duration,
+        next_try: Instant,
+    },
+}
+
+/// Die Verbindung ist abgebrochen (`Disconnected` oder I/O-Fehler beim
+/// Lesen bzw. Senden).
+struct Lost;
+
+/// Gilt der Fehler als Verbindungsabbruch? `Timeout` (heute von keiner
+/// Verbindung geliefert) bleibt ein gewöhnliches "nichts empfangen".
+fn is_loss(err: &TransportError) -> bool {
+    matches!(err, TransportError::Disconnected | TransportError::Io(_))
 }
 
 /// Kanalzustände der Kanalliste plus Änderungsstrom. Liegt hinter EINEM
@@ -172,6 +264,19 @@ impl ChannelTable {
         if current.as_ref() != Some(&update) {
             *current = Some(update.clone());
             let _ = self.changes.send(update);
+        }
+    }
+
+    /// Verbindungsverlust (Spec 0008, AK2): alle Kanäle veraltet, letzte
+    /// Werte bleiben.
+    fn mark_all_stale(&mut self) {
+        let keys: Vec<(ChannelKey, Option<f64>)> = self
+            .entries
+            .iter()
+            .map(|(key, state)| (*key, state.as_ref().and_then(|s| s.value)))
+            .collect();
+        for (key, value) in keys {
+            self.apply(key, value, true);
         }
     }
 
@@ -260,6 +365,7 @@ impl Lab {
             updates: updates_tx.clone(),
             shared: shared.clone(),
             poll: config.map(Poller::new),
+            link: Link::Connected,
         };
         tokio::spawn(actor.run());
 
@@ -311,20 +417,24 @@ impl Lab {
     /// im schlechtesten Fall dauert die Sequenz 500 ms (Quittung) + 500 ms
     /// (Rücklesen). Ein Rücklesewert für einen Kanal der Kanalliste
     /// aktualisiert auch dessen Zustand.
-    pub async fn set_and_read_back(&self, key: ChannelKey, value: f64) -> SetReadBack {
-        let nothing = SetReadBack {
-            ack: None,
-            readback: None,
-        };
+    pub async fn set_and_read_back(
+        &self,
+        key: ChannelKey,
+        value: f64,
+    ) -> Result<SetReadBack, SetReadBackError> {
         let (reply, rx) = oneshot::channel();
         if self
             .jobs
             .send(Job::SetAndReadBack { key, value, reply })
             .is_err()
         {
-            return nothing;
+            // Actor schon weg: Auftrag nie angenommen, also nie gesendet.
+            return Err(SetReadBackError::NotConnected);
         }
-        rx.await.unwrap_or(nothing)
+        // Actor endete, während er den Auftrag hielt: ob gesendet wurde,
+        // ist unbekannt.
+        rx.await
+            .unwrap_or(Err(SetReadBackError::ConnectionLost { ack: None }))
     }
 
     /// Aktueller Zustand aller Kanäle der Kanalliste, die schon einmal
@@ -433,6 +543,7 @@ struct Actor {
     updates: broadcast::Sender<Message>,
     shared: Arc<Shared>,
     poll: Option<Poller>,
+    link: Link,
 }
 
 impl Actor {
@@ -446,6 +557,25 @@ impl Actor {
                     Err(mpsc::error::TryRecvError::Empty) => break,
                     Err(mpsc::error::TryRecvError::Disconnected) => return,
                 }
+            }
+
+            // Getrennt (Spec 0008): Aufträge sofort mit Fehler beantworten,
+            // auf der getrennten Verbindung weder lesen noch senden - nur auf
+            // neue Aufträge oder den nächsten Verbindungsversuch warten.
+            if let Link::Disconnected { next_try, .. } = self.link {
+                while let Some(job) = self.queued.pop_front() {
+                    job.reject_not_connected();
+                }
+                tokio::select! {
+                    biased;
+
+                    job = self.jobs.recv() => match job {
+                        Some(job) => self.queued.push_back(job),
+                        None => return,
+                    },
+                    () = tokio::time::sleep_until(next_try) => self.try_reconnect().await,
+                }
+                continue;
             }
 
             // 2. Aufträge von außen haben Vorrang vor dem Polling.
@@ -470,11 +600,14 @@ impl Actor {
                     Some(job) => self.queued.push_back(job),
                     None => return,
                 },
-                line = self.connection.recv_line() => {
-                    if let Some(msg) = self.receive(line) {
-                        log_unsolicited(&msg);
+                line = self.connection.recv_line() => match line {
+                    Err(err) if is_loss(&err) => self.on_lost(&err).await,
+                    line => {
+                        if let Some(msg) = self.receive(line) {
+                            log_unsolicited(&msg);
+                        }
                     }
-                }
+                },
                 () = sleep_until_or_forever(next_cycle_at) => {
                     if let Some(poll) = self.poll.as_mut() {
                         poll.start_cycle();
@@ -499,8 +632,10 @@ impl Actor {
     }
 
     async fn poll_one(&mut self, key: ChannelKey) {
-        self.send(&Command::Query(key).to_wire()).await;
-        let answer = self.await_key(key).await;
+        let answer = match self.query_once(key).await {
+            Ok(answer) => answer,
+            Err(Lost) => return, // Abbruch ist schon behandelt (on_lost)
+        };
         let mut channels = self.shared.channels.lock().unwrap();
         match answer {
             Some(msg) => {
@@ -523,11 +658,12 @@ impl Actor {
 
     async fn execute(&mut self, job: Job) {
         match job {
-            Job::Send(line) => self.send(&line).await,
+            Job::Send(line) => {
+                let _ = self.send(&line).await;
+            }
             Job::Query { key, reply } => {
-                self.send(&Command::Query(key).to_wire()).await;
-                let value = self.await_key(key).await.map(|msg| msg.value);
-                let _ = reply.send(value);
+                let value = self.query_once(key).await.ok().flatten();
+                let _ = reply.send(value.map(|msg| msg.value));
             }
             Job::Set { key, value, reply } => {
                 let outcome = match self.send_and_await_ack(key, value).await {
@@ -536,71 +672,180 @@ impl Actor {
                     // Ablehnung heißt nicht "unverändert" - die Firmware
                     // klemmt Werte und quittiert trotzdem mit Fehler; den
                     // Ist-Zustand liefert nur Rücklesen.
-                    Some(ack) if ack.code == 0.0 => SetOutcome::Confirmed {
+                    Ok(Some(ack)) if ack.code == 0.0 => SetOutcome::Confirmed {
                         status_text: ack.status_text,
                     },
-                    Some(ack) => SetOutcome::Rejected {
+                    Ok(Some(ack)) => SetOutcome::Rejected {
                         code: ack.code,
                         status_text: ack.status_text,
                     },
-                    None => SetOutcome::NoReply,
+                    Ok(None) => SetOutcome::NoReply,
+                    // Abbruch beim oder nach dem Senden: Zustand unbekannt.
+                    Err(Lost) => SetOutcome::ConnectionLost,
                 };
                 let _ = reply.send(outcome);
             }
             Job::SetAndReadBack { key, value, reply } => {
-                let ack = self.send_and_await_ack(key, value).await;
-                // Rücklesen IMMER, auch ohne Quittung (Spec 0005 AK6,
-                // Stellglied-Regel: verbindlich ist nur das Rücklesen).
-                self.send(&Command::Query(key).to_wire()).await;
-                let readback = self.await_key(key).await.map(|msg| msg.value);
-                if let Some(value) = readback {
-                    self.shared
-                        .channels
-                        .lock()
-                        .unwrap()
-                        .apply(key, Some(value), false);
-                }
-                let _ = reply.send(SetReadBack { ack, readback });
+                let _ = reply.send(self.set_and_read_back(key, value).await);
             }
         }
     }
 
-    async fn send_and_await_ack(&mut self, key: ChannelKey, value: f64) -> Option<Ack> {
-        self.send(&Command::SetFloat(key, value).to_wire()).await;
+    /// Setz-Sequenz als unteilbare Einheit (Spec 0005 AK6). Bricht die
+    /// Verbindung beim Senden, beim Warten auf die Quittung oder beim
+    /// Rücklesen ab, ist der Zustand der Anlage unbekannt: `ConnectionLost`
+    /// mit der Quittung, falls sie schon da war (Spec 0008, AK3) - NIE
+    /// `NotConnected`, das hieße "sicher nicht gesendet".
+    async fn set_and_read_back(
+        &mut self,
+        key: ChannelKey,
+        value: f64,
+    ) -> Result<SetReadBack, SetReadBackError> {
+        let ack = self
+            .send_and_await_ack(key, value)
+            .await
+            .map_err(|Lost| SetReadBackError::ConnectionLost { ack: None })?;
+        // Rücklesen IMMER, auch ohne Quittung (Spec 0005 AK6,
+        // Stellglied-Regel: verbindlich ist nur das Rücklesen).
+        let readback = match self.query_once(key).await {
+            Ok(answer) => answer.map(|msg| msg.value),
+            Err(Lost) => return Err(SetReadBackError::ConnectionLost { ack }),
+        };
+        if let Some(value) = readback {
+            self.shared
+                .channels
+                .lock()
+                .unwrap()
+                .apply(key, Some(value), false);
+        }
+        Ok(SetReadBack { ack, readback })
+    }
+
+    async fn send_and_await_ack(
+        &mut self,
+        key: ChannelKey,
+        value: f64,
+    ) -> Result<Option<Ack>, Lost> {
+        self.send(&Command::SetFloat(key, value).to_wire()).await?;
         let ack_key = ChannelKey {
             address: key.address,
             subchannel: STATUS_SUBCHANNEL,
         };
-        self.await_key(ack_key).await.map(|msg| Ack {
+        Ok(self.await_key(ack_key).await?.map(|msg| Ack {
             code: msg.value,
             status_text: msg.status_text,
-        })
+        }))
     }
 
-    async fn send(&mut self, line: &str) {
-        if let Err(err) = self.connection.send_line(line).await {
-            tracing::warn!(?err, %line, "Senden fehlgeschlagen");
+    /// Abfrage senden und auf die Antwort warten.
+    async fn query_once(&mut self, key: ChannelKey) -> Result<Option<Message>, Lost> {
+        self.send(&Command::Query(key).to_wire()).await?;
+        self.await_key(key).await
+    }
+
+    async fn send(&mut self, line: &str) -> Result<(), Lost> {
+        match self.connection.send_line(line).await {
+            Ok(()) => Ok(()),
+            Err(err) if is_loss(&err) => {
+                self.on_lost(&err).await;
+                Err(Lost)
+            }
+            Err(err) => {
+                tracing::warn!(?err, %line, "Senden fehlgeschlagen");
+                Ok(())
+            }
         }
+    }
+
+    /// Verbindungsabbruch im Betrieb (Spec 0008): alte Session schließen,
+    /// alle Kanäle veraltet markieren (Werte bleiben), laufenden Poll-Zyklus
+    /// verwerfen, ersten Wiederverbindungsversuch nach
+    /// [`RECONNECT_BACKOFF_START`] einplanen.
+    async fn on_lost(&mut self, err: &TransportError) {
+        tracing::warn!(?err, "Verbindung verloren - Wiederverbindung mit Backoff");
+        let _ = tokio::time::timeout(RECONNECT_ATTEMPT_TIMEOUT, self.connection.disconnect()).await;
+        self.shared.channels.lock().unwrap().mark_all_stale();
+        if let Some(poll) = self.poll.as_mut() {
+            poll.cycle = None;
+        }
+        self.link = Link::Disconnected {
+            attempts: 0,
+            backoff: RECONNECT_BACKOFF_START,
+            next_try: Instant::now() + RECONNECT_BACKOFF_START,
+        };
+        self.set_link_stats(ConnectionState::Disconnected, 0);
+    }
+
+    /// Ein Wiederverbindungsversuch: alte Session schließen, neu verbinden,
+    /// alles zusammen höchstens [`RECONNECT_ATTEMPT_TIMEOUT`].
+    async fn try_reconnect(&mut self) {
+        let Link::Disconnected {
+            attempts, backoff, ..
+        } = self.link
+        else {
+            return;
+        };
+        let attempts = attempts + 1;
+        let connection = &mut self.connection;
+        let result = tokio::time::timeout(RECONNECT_ATTEMPT_TIMEOUT, async {
+            let _ = connection.disconnect().await;
+            connection.connect().await
+        })
+        .await;
+
+        if matches!(result, Ok(Ok(()))) {
+            tracing::info!(attempts, "Verbindung wiederhergestellt");
+            self.link = Link::Connected;
+            self.set_link_stats(ConnectionState::Connected, 0);
+            // Polling sofort wieder aufnehmen, alle Kanäle neu abfragen.
+            if let Some(poll) = self.poll.as_mut() {
+                poll.retry_after.clear();
+                poll.cycle = None;
+                poll.next_cycle_at = Instant::now();
+            }
+        } else {
+            // Abstand zählt ab dem Ende dieses Versuchs (Annahme, siehe
+            // RECONNECT_BACKOFF_START).
+            let backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
+            self.link = Link::Disconnected {
+                attempts,
+                backoff,
+                next_try: Instant::now() + backoff,
+            };
+            self.set_link_stats(ConnectionState::Disconnected, attempts);
+        }
+    }
+
+    fn set_link_stats(&self, connection: ConnectionState, attempts: u32) {
+        let mut stats = self.shared.stats.lock().unwrap();
+        stats.connection = connection;
+        stats.reconnect_attempts = attempts;
     }
 
     /// Wartet bis zu [`QUERY_TIMEOUT`] auf eine Nachricht für `key`. Alle
     /// anderen Zeilen, die währenddessen eintreffen, werden wie gewohnt an
     /// die Abonnenten verteilt, ändern aber keinen Kanalzustand.
-    async fn await_key(&mut self, key: ChannelKey) -> Option<Message> {
+    async fn await_key(&mut self, key: ChannelKey) -> Result<Option<Message>, Lost> {
         let deadline = Instant::now() + QUERY_TIMEOUT;
         loop {
             tokio::select! {
                 biased;
 
-                line = self.connection.recv_line() => {
-                    if let Some(msg) = self.receive(line) {
-                        if msg.key == key {
-                            return Some(msg);
-                        }
-                        log_unsolicited(&msg);
+                line = self.connection.recv_line() => match line {
+                    Err(err) if is_loss(&err) => {
+                        self.on_lost(&err).await;
+                        return Err(Lost);
                     }
-                }
-                () = tokio::time::sleep_until(deadline) => return None,
+                    line => {
+                        if let Some(msg) = self.receive(line) {
+                            if msg.key == key {
+                                return Ok(Some(msg));
+                            }
+                            log_unsolicited(&msg);
+                        }
+                    }
+                },
+                () = tokio::time::sleep_until(deadline) => return Ok(None),
             }
         }
     }
