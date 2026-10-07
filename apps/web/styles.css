@@ -50,6 +50,16 @@ body {
   gap: 0.5rem;
 }
 
+/* Verbindungsanzeige (Spec 0008, AK7): rechts in der Tab-Leiste, kein
+   Bedienelement; leer, solange die Anlage verbunden ist. */
+.connection-notice {
+  margin-left: auto;
+  color: #ffb4a8;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .tab {
   font: inherit;
   box-sizing: border-box;

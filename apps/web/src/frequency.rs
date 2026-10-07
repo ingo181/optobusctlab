@@ -206,6 +206,46 @@ mod tests {
     }
 
     // Netzwerkfehler-Pfad (fetch schlug fehl)
+    // Spec 0008 AK3: Verbindung während des Setzens verloren (503, Quittung
+    // evtl. vorhanden, kein Wert). Die bestätigte Frequenz darf NICHT aus
+    // der Quittung oder dem Wunschwert abgeleitet werden - nur der Hinweis
+    // erscheint.
+    #[test]
+    fn verbindung_waehrend_des_setzens_verloren_zeigt_hinweis_ohne_bestaetigung() {
+        let mut panel = FrequencyPanel {
+            confirmed_hz: Some(1000.0),
+            notice: None,
+        };
+        apply_set_response(
+            &mut panel,
+            2500.0,
+            false,
+            r#"{"ack":"OK","value":null,"error":"Verbindung während des Setzens verloren, Zustand unbekannt, nur Rücklesen ist verbindlich"}"#,
+        );
+        assert_eq!(panel.confirmed_hz, Some(1000.0));
+        assert_eq!(
+            panel.notice.as_deref(),
+            Some("Verbindung während des Setzens verloren, Zustand unbekannt, nur Rücklesen ist verbindlich")
+        );
+    }
+
+    // Spec 0008 AK3: keine Verbindung (503, nie gesendet).
+    #[test]
+    fn keine_verbindung_zur_anlage_zeigt_hinweis_ohne_bestaetigung() {
+        let mut panel = FrequencyPanel {
+            confirmed_hz: Some(1000.0),
+            notice: None,
+        };
+        apply_set_response(
+            &mut panel,
+            2500.0,
+            false,
+            r#"{"ack":null,"value":null,"error":"keine Verbindung zur Anlage"}"#,
+        );
+        assert_eq!(panel.confirmed_hz, Some(1000.0));
+        assert_eq!(panel.notice.as_deref(), Some("keine Verbindung zur Anlage"));
+    }
+
     #[test]
     fn note_failure_setzt_hinweis() {
         let mut panel = FrequencyPanel {

@@ -68,13 +68,14 @@ pub fn App() -> impl IntoView {
     crate::ws::connect(measurements);
     let frequency = FrequencyState::new();
     let active = RwSignal::new(initial_tab());
+    let connection_notice = watch_connection();
 
     let div_value =
         Signal::derive(move || measurements.with(|m| m.get(&DIV_CHANNEL).and_then(|x| x.value)));
 
     view! {
         <div class="app">
-            <TabBar active=active />
+            <TabBar active=active connection_notice=connection_notice />
             <section
                 id="view-gauge"
                 class="view"
@@ -112,11 +113,43 @@ pub fn App() -> impl IntoView {
     }
 }
 
+/// Abstand der Abfragen von `GET /api/poll` für die Verbindungsanzeige
+/// (Spec 0008, Entscheidung 2026-10-07).
+const CONNECTION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Fragt den Verbindungszustand zur Anlage sofort und dann alle 2 s ab.
+/// Ein fehlgeschlagener Abruf (Server nicht erreichbar) wird NICHT als
+/// "keine Verbindung zur Anlage" gewertet - siehe `connection.rs`.
+fn watch_connection() -> RwSignal<Option<&'static str>> {
+    use crate::connection::connection_notice;
+
+    let notice = RwSignal::new(None);
+    let refresh = move || {
+        leptos::task::spawn_local(async move {
+            let result = crate::api::get_poll().await;
+            let response = match &result {
+                Ok((http_ok, body)) => Ok((*http_ok, body.as_str())),
+                Err(message) => Err(message.as_str()),
+            };
+            notice.set(connection_notice(response));
+        });
+    };
+    refresh();
+    // Der Handle wird bewusst nicht gespeichert: Die Abfrage läuft so lange
+    // wie die Seite (die App wird nie abgebaut).
+    let _ = set_interval_with_handle(refresh, CONNECTION_POLL_INTERVAL);
+    notice
+}
+
 /// Tab-Leiste (Spec 0006, AK1): ein Button je Ansicht, der aktive ist
 /// hervorgehoben und per `aria-selected` für Screenreader markiert. Der
-/// kleine Name links ist kein Bedienelement.
+/// kleine Name links ist kein Bedienelement, ebenso die Verbindungsanzeige
+/// rechts (Spec 0008, AK7) - sie verdrängt kein Touch-Ziel.
 #[component]
-fn TabBar(active: RwSignal<Tab>) -> impl IntoView {
+fn TabBar(
+    active: RwSignal<Tab>,
+    connection_notice: RwSignal<Option<&'static str>>,
+) -> impl IntoView {
     let tabs = Tab::ALL
         .into_iter()
         .map(|tab| {
@@ -143,6 +176,9 @@ fn TabBar(active: RwSignal<Tab>) -> impl IntoView {
             <div class="tabs" role="tablist" aria-label="Ansichten">
                 {tabs}
             </div>
+            <span class="connection-notice" role="status">
+                {move || connection_notice.get().unwrap_or_default()}
+            </span>
         </nav>
     }
 }

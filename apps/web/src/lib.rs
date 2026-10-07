@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod app;
+pub mod connection;
 pub mod frequency;
 pub mod gauge;
 pub mod measurements;
