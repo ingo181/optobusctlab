@@ -1,6 +1,9 @@
 # 0008 – Verbindungsverlust zum XPort
 
-Status: Entwurf
+Status: In Arbeit
+
+> Nummer 0007 ist für das Ziffernfeld der DDS-Ansicht reserviert (siehe
+> Spec 0006, Entschiedene Fragen 1) und wird später vergeben.
 
 ## Kontext
 
@@ -52,6 +55,17 @@ Backoff, Zustand abfragbar.
 - `octlab_transport::SimBus` bekommt eine **Simulation von Abbruch und
   Wiederverbindung**, damit sich die Kriterien unten mit pausierter Zeit
   deterministisch testen lassen (wie in Spec 0005).
+- **HTTP-Status ohne Verbindung: 503** (Service Unavailable). 504 bleibt
+  der Fall "Modul antwortet nicht / Quittung fehlt" (Spec 0003/0005).
+- **Aufträge während der Unterbrechung werden sofort mit Fehler
+  beantwortet** und NICHT bis zur Wiederverbindung zurückgehalten.
+  Begründung: Ein verspätet ausgeführtes Setzen wäre bei einem Stellglied
+  gefährlich - der Bediener hat dann längst etwas anderes im Sinn, und die
+  Anlage würde unerwartet umschalten.
+- **Felder in `GET /api/poll`:** `connection` (`"connected"` oder
+  `"disconnected"`) und `reconnect_attempts` (Zahl der
+  Wiederverbindungsversuche seit dem letzten Abbruch, 0 im verbundenen
+  Zustand).
 
 **Was als Abbruch gilt:** Die Verbindung meldet beim Lesen oder Senden
 `Disconnected` bzw. einen I/O-Fehler (Gegenseite hat geschlossen oder
@@ -94,15 +108,14 @@ Scenario: Setz-Sequenz ohne Verbindung
   When das Setzen von 4:0 angefordert wird
   Then meldet das Ergebnis "keine Verbindung"
   And es wird nicht 500 + 500 ms auf Quittung und Rücklesen gewartet
+  And nach einer späteren Wiederverbindung wird dieses Setzen NICHT nachträglich gesendet
 
 Scenario: HTTP-Antwort ohne Verbindung
   Given die Verbindung ist verloren
   When POST /api/channel/4/0 eintrifft
-  Then ist die Antwort kein 2xx, nennt die fehlende Verbindung als Grund
+  Then ist die Antwort 503, nennt die fehlende Verbindung als Grund
   And enthält keinen Wert
 ```
-
-Der genaue HTTP-Status (z.B. 503) wird bei der Umsetzung festgelegt.
 
 ### AK4: Wiederverbindung mit Backoff
 
@@ -139,13 +152,13 @@ Scenario: Backoff beginnt nach einem erneuten Abbruch wieder bei 1 s
 Scenario: Getrennt
   Given die Verbindung ist verloren und es gab 3 erfolglose Versuche
   When GET /api/poll abgefragt wird
-  Then meldet die Antwort zusätzlich "getrennt" und 3 Versuche
+  Then enthält die Antwort "connection": "disconnected" und "reconnect_attempts": 3
   And die bisherigen Felder (Intervall, Zykluszeit, Zyklen, Überläufe) sind unverändert vorhanden
 
 Scenario: Verbunden
   Given die Verbindung steht
   When GET /api/poll abgefragt wird
-  Then meldet die Antwort "verbunden"
+  Then enthält die Antwort "connection": "connected" und "reconnect_attempts": 0
 ```
 
 ### AK7: Minimale Anzeige im Frontend
@@ -196,15 +209,15 @@ Neustart des Servers wieder. Befunde siehe Messpunkte.
 - Serielle Verbindung (`SerialConnection` existiert nicht)
 - Backoff-Werte zur Laufzeit konfigurierbar machen
 
-## Offene Fragen
+## Entschiedene Fragen (Betreiber, 2026-10-07)
 
-1. Welcher HTTP-Status für "keine Verbindung" bei `POST /api/channel/...`
-   (Vorschlag: 503 Service Unavailable)?
-2. Bleiben Aufträge, die während der Unterbrechung eintreffen, sofort mit
-   "keine Verbindung" beantwortet (Vorschlag), oder sollen sie bis zur
-   Wiederverbindung warten?
-3. Feldnamen in `GET /api/poll` (Vorschlag: `"connection":
-   "connected"|"disconnected"`, `"reconnect_attempts": <n>`).
+1. **HTTP-Status ohne Verbindung:** 503; 504 bleibt für fehlende
+   Quittung bzw. Antwort (AK3).
+2. **Aufträge während der Unterbrechung:** sofort mit Fehler beantworten,
+   nicht bis zur Wiederverbindung zurückhalten - ein verspätet
+   ausgeführtes Setzen wäre bei einem Stellglied gefährlich (AK3).
+3. **Felder in `GET /api/poll`:** `connection`
+   (`"connected"`/`"disconnected"`) und `reconnect_attempts` (AK6).
 
 ## Offene Messpunkte für die nächste Laborsession
 
@@ -218,6 +231,9 @@ Neustart des Servers wieder. Befunde siehe Messpunkte.
    neu starten bzw. stromlos machen und Netzwerkkabel ziehen: kommt ein
    Verbindungsende (EOF/RST) beim Server an, oder hängt die Verbindung still
    (dann greift diese Spec nicht, siehe "Außerhalb des Scopes")?
+   **Folgeaktion:** Tritt stilles Hängen auf, braucht es eine eigene Spec
+   (TCP-Keepalive bzw. Erkennung über eine Zeitüberschreitung ohne
+   Antworten).
 3. **Verhalten nach XPort-Neustart:** Nimmt der XPort nach einem Neustart
    sofort wieder Verbindungen an, und antworten die Module danach ohne
    weiteres Zutun?
