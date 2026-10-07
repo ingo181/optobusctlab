@@ -17,7 +17,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use octlab_lab::{ChannelUpdate, Lab, PollConfig, PollStats};
+use octlab_lab::{
+    Ack, ChannelUpdate, ConnectionState, Lab, PollConfig, PollStats, SetReadBackError,
+};
 use octlab_protocol::{ChannelKey, ModuleAddress, SubChannel};
 use octlab_transport::{BoardConnection, SimulatedConnection, TcpConnection};
 use serde::{Deserialize, Serialize};
@@ -83,13 +85,18 @@ struct ChannelDto {
     unit: &'static str,
 }
 
-/// Antwort von `GET /api/poll` (Spec 0005, AK10).
+/// Antwort von `GET /api/poll` (Spec 0005, AK10; Verbindungsfelder Spec
+/// 0008, AK6).
 #[derive(Debug, Serialize)]
 struct PollStatsDto {
     interval_ms: u128,
     last_cycle_ms: Option<u128>,
     completed_cycles: u64,
     overrun_episodes: u64,
+    /// `"connected"` oder `"disconnected"`.
+    connection: &'static str,
+    /// Wiederverbindungsversuche seit dem letzten Abbruch, 0 wenn verbunden.
+    reconnect_attempts: u32,
 }
 
 impl From<PollStats> for PollStatsDto {
@@ -99,6 +106,11 @@ impl From<PollStats> for PollStatsDto {
             last_cycle_ms: stats.last_cycle.map(|d| d.as_millis()),
             completed_cycles: stats.completed_cycles,
             overrun_episodes: stats.overrun_episodes,
+            connection: match stats.connection {
+                ConnectionState::Connected => "connected",
+                ConnectionState::Disconnected => "disconnected",
+            },
+            reconnect_attempts: stats.reconnect_attempts,
         }
     }
 }
@@ -269,16 +281,38 @@ async fn set_channel(
         subchannel: SubChannel(sub),
     };
 
-    // VORLÄUFIG (Spec 0008, Schritt 2): Die Fehlerfälle "keine Verbindung"
-    // und "Verbindung während des Setzens verloren" werden wie bisher als
-    // "keine Antwort" (504 ohne Wert) gemeldet. Die richtige 503-Antwort
-    // kommt mit Tests in Schritt 3.
+    // Verbindungsverlust (Spec 0008, AK3): immer 503, ohne Wert - aber die
+    // beiden Fälle klar unterscheidbar. Nur "keine Verbindung" heißt "sicher
+    // nicht gesendet"; nach einem Abbruch WÄHREND des Setzens ist der
+    // Zustand unbekannt (Stellglied-Regel: verbindlich ist nur das
+    // Rücklesen bzw. der nächste Poll). 504 bleibt der Fall "keine
+    // Quittung / keine Antwort".
     let result = match state.lab.set_and_read_back(key, request.value).await {
         Ok(result) => result,
-        Err(_) => octlab_lab::SetReadBack {
-            ack: None,
-            readback: None,
-        },
+        Err(SetReadBackError::NotConnected) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(SetChannelResponse {
+                    ack: None,
+                    value: None,
+                    error: Some("keine Verbindung zur Anlage".to_string()),
+                }),
+            );
+        }
+        Err(SetReadBackError::ConnectionLost { ack }) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(SetChannelResponse {
+                    ack: ack.map(ack_text),
+                    value: None,
+                    error: Some(
+                        "Verbindung während des Setzens verloren, Zustand unbekannt, \
+                         nur Rücklesen ist verbindlich"
+                            .to_string(),
+                    ),
+                }),
+            );
+        }
     };
     let value = result.readback;
     match result.ack {
@@ -298,7 +332,7 @@ async fn set_channel(
         }
         // Quittungs-Code 0 = angenommen.
         Some(ack) if ack.code == 0.0 => {
-            let ack = Some(ack.status_text.unwrap_or_else(|| "OK".to_string()));
+            let ack = Some(ack_text(ack));
             match value {
                 Some(_) => (
                     StatusCode::OK,
@@ -325,11 +359,7 @@ async fn set_channel(
         // Firmware kann den Wert trotz Fehlerquittung verändert haben
         // (Klemmung).
         Some(ack) => {
-            let code = ack.code;
-            let ack = Some(
-                ack.status_text
-                    .unwrap_or_else(|| format!("Fehlercode {code}")),
-            );
+            let ack = Some(ack_text(ack));
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(SetChannelResponse {
@@ -339,6 +369,16 @@ async fn set_channel(
                 }),
             )
         }
+    }
+}
+
+/// Statustext einer Quittung für die HTTP-Antwort: der Klartext der Anlage,
+/// sonst "OK" (Code 0) bzw. "Fehlercode <n>".
+fn ack_text(ack: Ack) -> String {
+    match ack.status_text {
+        Some(text) => text,
+        None if ack.code == 0.0 => "OK".to_string(),
+        None => format!("Fehlercode {}", ack.code),
     }
 }
 
