@@ -276,6 +276,36 @@ frei; die Server-CPU lag danach bei 0 Ticks in 3 s (vor der Umsetzung:
 503 "keine Verbindung zur Anlage"; im Log genau eine Warnung "Verbindung
 verloren".
 
+**Handtest** (2026-10-07, Betreiber Ingo, Desktop-Browser gegen
+`fake_xport --exit-after-s 40`, danach `fake_xport` ohne Exit-Option neu
+gestartet; Stand `46628ca`, Frontend aus `19e7322`). Alle Beobachtungen wie
+erwartet:
+
+1. Nach dem Ende von `fake_xport` erschien rechts in der Tab-Leiste "keine
+   Verbindung zur Anlage"; in der Übersicht standen alle 12 Kanäle auf
+   "veraltet" mit ihren letzten Werten (AK2, AK7).
+2. Setzen von 2500 im getrennten Zustand: roter Hinweis im
+   DDS-Bedienfeld (AK3). Der Wortlaut wurde nicht protokolliert; die
+   Server-Antwort in diesem Fall ist "keine Verbindung zur Anlage" (503,
+   siehe Server-Tests).
+3. Nach der Wiederverbindung: Anzeige weg, Werte laufen, "veraltet" weg
+   (AK5, AK7). Die DDS-Frequenz blieb bei 1000 - das abgelehnte Setzen
+   wurde NICHT nachgeholt (AK3).
+4. Messdaten (Server-Log und `GET /api/poll`): Abbruch um 23:14:16.4,
+   Wiederverbindung um 23:18:17.5 beim 12. Versuch, also +241 s - passt
+   genau zum Plan (+1, 3, 7, 15, 31, 61, 91, 121, 151, 181, 211, 241 s;
+   AK4). Die Wiederverbindung kam 19 s nach dem Neustart von `fake_xport`,
+   weil der Server gerade im 30-s-Takt war. `GET /api/poll` meldete
+   während der Trennung `"disconnected"` mit 8 Versuchen (nach etwa
+   130 s), danach `"connected"` mit 0 Versuchen (AK6). Server-CPU während
+   der Trennung 2 Ticks in 3 s, nach der Wiederverbindung 1 Tick in 3 s -
+   Leerlauf (AK1). Im Log genau eine Warnung "Verbindung verloren" und
+   eine Meldung "Verbindung wiederhergestellt attempts=12".
+
+**Vermerk:** Nach einem langen Ausfall dauert die Rückkehr bis zu 30 s
+(Maximum des Backoffs), auch wenn die Gegenseite schon wieder da ist. Ob
+das Maximum so bleibt, wird gemeinsam mit Messpunkt 1 im Labor bewertet.
+
 **Offen bis zur Laborsession:** AK9 und die Messpunkte 1-3 unten. Bis
 dahin bleiben die Backoff-Werte und das 3-s-Zeitlimit Annahmen.
 
