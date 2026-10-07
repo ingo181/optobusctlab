@@ -8,6 +8,7 @@
 //! cargo run --example fake_xport -p octlab-transport            # 127.0.0.1:15001
 //! cargo run --example fake_xport -p octlab-transport -- 0.0.0.0:15001
 //! cargo run --example fake_xport -p octlab-transport -- --mute 2  # DCG antwortet nicht
+//! cargo run --example fake_xport -p octlab-transport -- --exit-after-s 10  # Abbruch nach 10 s
 //! # dagegen dann:
 //! cargo run -p octlab-server -- --connection tcp --addr 127.0.0.1:15001
 //! ```
@@ -27,7 +28,13 @@
 //! unbeantwortet, wie bei einem Modul, das nicht antwortet (die per ESDM
 //! modellierte Discovery-Semantik, kein Fehlerfall). `--mute <addr>`
 //! (mehrfach möglich) schaltet ein ganzes Modul stumm, z.B. um "veraltet"
-//! in der Übersicht vorzuführen.
+//! in der Übersicht vorzuführen. `--exit-after-s N` beendet den Simulator
+//! N Sekunden nach dem Start (gerechnet ab Programmstart, nicht ab der
+//! ersten Session): Die offene Session wird geschlossen und der Port
+//! freigegeben - ein verbundener `octlab-server` erlebt so einen echten
+//! Verbindungsabbruch, und weil danach niemand mehr lauscht, werden seine
+//! Wiederverbindungsversuche abgelehnt (Spec 0008, Handtest und
+//! Screenshots im getrennten Zustand).
 //!
 //! Die Werte sind FREI ERFUNDEN (plausible Größenordnung laut c't-Lab-Doku
 //! von 2010), keine Messwerte. DIV 1:0 wandert als 20-Sekunden-Sinus über
@@ -67,12 +74,14 @@ fn div_value(since_start: Duration) -> f64 {
     (sine + noise).clamp(0.0, 0.01)
 }
 
-/// Kommandozeile: optional eine Lausch-Adresse (Default `127.0.0.1:15001`)
-/// und beliebig viele `--mute <addr>`. Bewusst ohne `clap` - das ist ein
-/// Beispiel in `octlab-transport`, keine neue Dependency wert.
-fn parse_args() -> (String, Vec<u8>) {
+/// Kommandozeile: optional eine Lausch-Adresse (Default `127.0.0.1:15001`),
+/// beliebig viele `--mute <addr>` und optional `--exit-after-s <n>`.
+/// Bewusst ohne `clap` - das ist ein Beispiel in `octlab-transport`, keine
+/// neue Dependency wert.
+fn parse_args() -> (String, Vec<u8>, Option<Duration>) {
     let mut listen = "127.0.0.1:15001".to_string();
     let mut muted = Vec::new();
+    let mut exit_after = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--mute" {
@@ -81,11 +90,17 @@ fn parse_args() -> (String, Vec<u8>) {
                 .and_then(|a| a.parse().ok())
                 .expect("--mute braucht eine Moduladresse 0..7");
             muted.push(addr);
+        } else if arg == "--exit-after-s" {
+            let secs: u64 = args
+                .next()
+                .and_then(|a| a.parse().ok())
+                .expect("--exit-after-s braucht eine Zahl von Sekunden");
+            exit_after = Some(Duration::from_secs(secs));
         } else {
             listen = arg;
         }
     }
-    (listen, muted)
+    (listen, muted, exit_after)
 }
 
 /// Frischer Bus pro Session: jede neue Verbindung beginnt mit den
@@ -104,16 +119,36 @@ fn new_bus(muted: &[u8]) -> SimBus {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let (addr, muted) = parse_args();
+    let (addr, muted, exit_after) = parse_args();
     let listener = TcpListener::bind(&addr).await?;
     println!("Fake-XPort lauscht auf {addr} (stumm: {muted:?})");
     println!("octlab-server dagegen: cargo run -p octlab-server -- --connection tcp --addr {addr}");
     let start = Instant::now();
 
+    match exit_after {
+        None => serve(listener, &muted, start).await,
+        Some(after) => {
+            println!("Beende mich nach {} s (--exit-after-s)", after.as_secs());
+            tokio::select! {
+                result = serve(listener, &muted, start) => result,
+                () = tokio::time::sleep(after) => {
+                    // Rückkehr aus main verwirft `serve` samt Listener und
+                    // Session-Sockets: Die Session wird geschlossen (der
+                    // Server sieht das Verbindungsende), der Port ist frei.
+                    println!("--exit-after-s abgelaufen - Session geschlossen, Port freigegeben");
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// Nimmt nacheinander Sessions an und beantwortet sie (eine zur Zeit).
+async fn serve(listener: TcpListener, muted: &[u8], start: Instant) -> std::io::Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
         println!("Session von {peer}");
-        let bus = new_bus(&muted);
+        let bus = new_bus(muted);
 
         // DIV-Sinus: ein eigener Task schreibt alle 100 ms einen neuen Wert
         // in den Bus. `bus.clone()` ist ein zweites Handle auf DENSELBEN

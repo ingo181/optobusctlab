@@ -16,6 +16,10 @@ Aufruf: tools/screenshot/shot.sh [Optionen]
   --mute ADR        Modul ADR in fake_xport stummschalten (mehrfach möglich)
   --tab NAME        URL-Fragment für die App, z.B. uebersicht -> /#uebersicht
                     (Tab-Auswahl beim Laden, Spec 0006)
+  --fake-exit-after-s N
+                    fake_xport beendet sich N s nach dem Start (Spec 0008):
+                    der Server verliert die Verbindung, für Screenshots im
+                    Zustand "keine Verbindung zur Anlage" 
   --out DATEI       Ziel-PNG (Default target/screenshots/frontend-BxH[-NAME].png)
   --wait-ms MS      Wartezeit, bis Firefox auslöst (Default 8000)
   --settle-ms MS    Wartezeit nach dem Serverstart, bevor Firefox startet,
@@ -33,6 +37,7 @@ tool_dir="$repo/tools/screenshot"
 size="800x480"
 mutes=()
 tab=""
+fake_exit=()
 out=""
 wait_ms=8000
 settle_ms=3000
@@ -45,6 +50,7 @@ while [[ $# -gt 0 ]]; do
         --size) size="$2"; shift 2 ;;
         --mute) mutes+=(--mute "$2"); shift 2 ;;
         --tab) tab="$2"; shift 2 ;;
+        --fake-exit-after-s) fake_exit=(--exit-after-s "$2"); shift 2 ;;
         # Relativ zum Aufrufverzeichnis auflösen: Firefox würde einen
         # relativen Pfad gegenüber seinem (temporären) Profil auflösen.
         --out) out="$2"; [[ "$out" == /* ]] || out="$PWD/$out"; shift 2 ;;
@@ -112,7 +118,7 @@ if [[ "$build" == 1 ]]; then
 fi
 
 # --- Starten -----------------------------------------------------------------
-start fake_xport "$repo/target/debug/examples/fake_xport" "127.0.0.1:$fake_port" "${mutes[@]}"
+start fake_xport "$repo/target/debug/examples/fake_xport" "127.0.0.1:$fake_port" "${mutes[@]}" "${fake_exit[@]}"
 sleep 0.5
 start server "$repo/target/debug/octlab-server" --connection tcp --addr "127.0.0.1:$fake_port"
 start helper python3 -I "$tool_dir/helper_server.py" "$helper_port"

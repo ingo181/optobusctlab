@@ -12,6 +12,7 @@ Vom Repo-Root:
 tools/screenshot/shot.sh                      # 800x480, alle Module antworten
 tools/screenshot/shot.sh --mute 2             # DCG stumm -> Übersicht zeigt "veraltet"
 tools/screenshot/shot.sh --tab uebersicht --mute 2   # App mit /#uebersicht laden
+tools/screenshot/shot.sh --fake-exit-after-s 2 --settle-ms 5000  # Zustand "keine Verbindung zur Anlage"
 tools/screenshot/shot.sh --size 1000x1300 --out /tmp/gross.png
 tools/screenshot/shot.sh --help               # alle Optionen
 ```
