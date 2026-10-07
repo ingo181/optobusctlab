@@ -15,6 +15,11 @@
 //!   bildet die Simulation bewusst nicht nach.
 //! - Stummgeschaltete Adressen antworten auf nichts (Timeout-Szenarien).
 //! - Optionale Antwortverzögerung (Zyklusüberlauf-Szenarien).
+//! - Abbruch und Wiederverbindung (Spec 0008): [`SimBus::drop_connection`]
+//!   bildet das gemessene TCP-Verhalten nach - danach liefern Lesen und
+//!   Senden sofort und bei JEDEM Aufruf `Disconnected`. Ein gelungenes
+//!   `connect()` startet eine frische Session (Modulwerte bleiben, für die
+//!   alte Session unterwegs gewesene Antworten nicht).
 //!
 //! Wird außerdem vom Beispiel `fake_xport` verwendet ([`Self::on_line_sent`] +
 //! [`Self::next_incoming`] direkt, ohne `SimulatedConnection`).
@@ -53,7 +58,23 @@ struct BusState {
     /// Eingeplante eingehende Zeilen, aufsteigend nach Fälligkeit sortiert.
     incoming: VecDeque<(Instant, String)>,
     sent: Vec<(Instant, String)>,
+    /// Session getrennt (Abbruch durch die Gegenseite oder `disconnect()`
+    /// des Clients). `false` = verbunden - der Bus startet verbunden, auch
+    /// ohne vorheriges `connect()` (so nutzen ihn `fake_xport` und ältere
+    /// Tests).
+    disconnected: bool,
+    /// Solange `true`, scheitert `connect()` ("Connection refused").
+    refuse_connections: bool,
+    connection_log: Vec<(Instant, ConnectionEvent)>,
+    io_while_disconnected: Vec<(Instant, IoAttempt)>,
+    /// Leseversuche seit dem letzten Verbindungswechsel (für den Wächter;
+    /// das Protokoll oben bleibt dagegen vollständig).
+    reads_since_change: usize,
 }
+
+/// Ab so vielen Leseversuchen auf einer getrennten Verbindung gilt das als
+/// Dauerschleife (siehe [`SimBus::note_io_while_disconnected`]).
+const BUSY_LOOP_READS: usize = 10_000;
 
 impl BusState {
     /// Sortiert ein, hinter allen Einträgen mit gleicher Fälligkeit
@@ -172,9 +193,148 @@ impl SimBus {
         }
     }
 
+    // --- Spec 0008: Abbruch und Wiederverbindung -------------------------
+
+    /// Die Gegenseite bricht die Verbindung ab (wie ein beendeter
+    /// `fake_xport` oder ein XPort, der die Session schließt). Für die alte
+    /// Session unterwegs gewesene Antworten verfallen; ein wartendes
+    /// `recv_line()` wird geweckt und liefert `Disconnected`.
+    pub fn drop_connection(&self) {
+        let mut state = self.lock();
+        state.disconnected = true;
+        state.incoming.clear();
+        state.reads_since_change = 0;
+        state
+            .connection_log
+            .push((Instant::now(), ConnectionEvent::Dropped));
+        drop(state);
+        self.wake.notify_one();
+    }
+
+    /// Solange `true`, scheitert jedes `connect()` (z.B. XPort noch nicht
+    /// wieder da oder alte Session noch nicht abgebaut).
+    pub fn refuse_connections(&self, refuse: bool) {
+        self.lock().refuse_connections = refuse;
+    }
+
+    /// Alle Verbindungsereignisse mit Zeitpunkt.
+    pub fn connection_log(&self) -> Vec<(Instant, ConnectionEvent)> {
+        self.lock().connection_log.clone()
+    }
+
+    /// Alle Lese- und Sendeversuche, die auf einer getrennten Verbindung
+    /// stattfanden (Spec 0008, AK1: davon soll es zwischen zwei
+    /// Verbindungsversuchen keine geben).
+    pub fn io_while_disconnected(&self) -> Vec<(Instant, IoAttempt)> {
+        self.lock().io_while_disconnected.clone()
+    }
+
+    /// `connect()` des Clients: `true` = angenommen, frische Session.
+    pub(crate) fn try_connect(&self) -> bool {
+        let mut state = self.lock();
+        let accepted = !state.refuse_connections;
+        if accepted {
+            state.disconnected = false;
+            state.incoming.clear();
+            state.reads_since_change = 0;
+        }
+        state
+            .connection_log
+            .push((Instant::now(), ConnectionEvent::Connect { accepted }));
+        accepted
+    }
+
+    /// `disconnect()` des Clients: Session geschlossen.
+    pub(crate) fn on_disconnect(&self) {
+        let mut state = self.lock();
+        state.disconnected = true;
+        state.incoming.clear();
+        state.reads_since_change = 0;
+        state
+            .connection_log
+            .push((Instant::now(), ConnectionEvent::Disconnect));
+        drop(state);
+        self.wake.notify_one();
+    }
+
+    pub(crate) fn is_disconnected(&self) -> bool {
+        self.lock().disconnected
+    }
+
+    /// Protokolliert einen Lese- oder Sendeversuch auf der getrennten
+    /// Verbindung.
+    ///
+    /// Wächter gegen hängende Tests: Mit pausierter Tokio-Uhr läuft die
+    /// Zeit nur weiter, wenn kein Task bereit ist. Liest ein Client nach
+    /// einem Abbruch ohne Pause weiter (die Dauerschleife aus dem Befund zu
+    /// Spec 0008), ist er IMMER bereit - der Test würde ewig hängen statt
+    /// zu scheitern. Ab [`BUSY_LOOP_READS`] Leseversuchen bricht der Bus
+    /// deshalb mit einer klaren Meldung ab.
+    pub(crate) fn note_io_while_disconnected(&self, attempt: IoAttempt) {
+        let mut state = self.lock();
+        state.io_while_disconnected.push((Instant::now(), attempt));
+        if attempt == IoAttempt::Recv {
+            state.reads_since_change += 1;
+        }
+        let reads = state.reads_since_change;
+        drop(state);
+        assert!(
+            reads <= BUSY_LOOP_READS,
+            "SimBus: Dauerschleife - {reads} Leseversuche auf getrennter Verbindung"
+        );
+    }
+
+    /// Wie [`Self::next_incoming`], endet aber mit `None`, sobald die
+    /// Session getrennt ist (auch wenn das erst während des Wartens
+    /// passiert). Ebenso abbruchsicher.
+    pub(crate) async fn next_incoming_in_session(&self) -> Option<String> {
+        loop {
+            let next_due = {
+                let mut state = self.lock();
+                if state.disconnected {
+                    return None;
+                }
+                match state.incoming.front() {
+                    Some((due, _)) if *due <= Instant::now() => {
+                        return Some(state.incoming.pop_front().expect("front() war Some").1);
+                    }
+                    Some((due, _)) => Some(*due),
+                    None => None,
+                }
+            };
+            match next_due {
+                Some(due) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(due) => {}
+                        _ = self.wake.notified() => {}
+                    }
+                }
+                None => self.wake.notified().await,
+            }
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, BusState> {
         self.state.lock().expect("SimBus-Mutex vergiftet")
     }
+}
+
+/// Ereignis im Verbindungsprotokoll des Busses (Spec 0008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionEvent {
+    /// `connect()` des Clients; `accepted = false` bei Ablehnung.
+    Connect { accepted: bool },
+    /// `disconnect()` des Clients (Session vom Client geschlossen).
+    Disconnect,
+    /// Abbruch durch die Gegenseite ([`SimBus::drop_connection`]).
+    Dropped,
+}
+
+/// Lese- oder Sendeversuch auf einer getrennten Verbindung (Spec 0008, AK1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoAttempt {
+    Recv,
+    Send,
 }
 
 enum Request {
@@ -415,5 +575,198 @@ mod tests {
                 .as_deref(),
             Some("#1:0=0.5")
         );
+    }
+
+    // --- Spec 0008: Abbruch und Wiederverbindung -------------------------
+
+    use crate::TransportError;
+
+    #[tokio::test(start_paused = true)]
+    async fn ohne_abbruch_keine_fehler() {
+        let (mut conn, bus) = connection_with_bus();
+        bus.set_value(1, 0, "0.5");
+
+        conn.connect().await.unwrap();
+        conn.send_line("1:0?").await.unwrap();
+
+        assert_eq!(
+            recv_within(&mut conn, Duration::from_secs(1))
+                .await
+                .as_deref(),
+            Some("#1:0=0.5")
+        );
+        assert!(bus.io_while_disconnected().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nach_abbruch_liefert_lesen_sofort_und_wiederholt_disconnected() {
+        let (mut conn, bus) = connection_with_bus();
+        bus.drop_connection();
+
+        for _ in 0..3 {
+            let result = tokio::time::timeout(Duration::ZERO, conn.recv_line()).await;
+            assert!(
+                matches!(result, Ok(Err(TransportError::Disconnected))),
+                "erwartet sofort Disconnected, kam: {result:?}"
+            );
+        }
+        let reads = bus
+            .io_while_disconnected()
+            .iter()
+            .filter(|(_, io)| *io == IoAttempt::Recv)
+            .count();
+        assert_eq!(reads, 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nach_abbruch_scheitert_senden_und_nichts_kommt_an() {
+        let (mut conn, bus) = connection_with_bus();
+        let client_log = conn.sent_handle();
+        bus.drop_connection();
+
+        let result = conn.send_line("4:0=2500!").await;
+
+        assert!(
+            matches!(result, Err(TransportError::Disconnected)),
+            "kam: {result:?}"
+        );
+        assert!(bus.sent().is_empty(), "Bus hat empfangen: {:?}", bus.sent());
+        assert!(client_log.lock().unwrap().is_empty());
+        assert_eq!(
+            bus.io_while_disconnected()
+                .iter()
+                .map(|(_, io)| *io)
+                .collect::<Vec<_>>(),
+            vec![IoAttempt::Send]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wartendes_lesen_wird_durch_abbruch_beendet() {
+        let (mut conn, bus) = connection_with_bus();
+        let dropper = bus.clone();
+        let drop_later = async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            dropper.drop_connection();
+        };
+
+        let (result, ()) = tokio::join!(
+            tokio::time::timeout(Duration::from_secs(1), conn.recv_line()),
+            drop_later
+        );
+
+        assert!(
+            matches!(result, Ok(Err(TransportError::Disconnected))),
+            "kam: {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn abgelehnte_verbindung_scheitert_und_wird_protokolliert() {
+        let (mut conn, bus) = connection_with_bus();
+        bus.drop_connection();
+        bus.refuse_connections(true);
+
+        assert!(conn.connect().await.is_err());
+
+        bus.refuse_connections(false);
+        conn.connect().await.unwrap();
+
+        let events: Vec<ConnectionEvent> =
+            bus.connection_log().into_iter().map(|(_, e)| e).collect();
+        assert_eq!(
+            events,
+            vec![
+                ConnectionEvent::Dropped,
+                ConnectionEvent::Connect { accepted: false },
+                ConnectionEvent::Connect { accepted: true },
+            ]
+        );
+    }
+
+    /// Eine Wiederverbindung ist eine neue Session: Antworten, die für die
+    /// alte Session unterwegs waren, kommen nicht mehr an; Modulwerte
+    /// bleiben (die Module selbst laufen weiter).
+    #[tokio::test(start_paused = true)]
+    async fn wiederverbindung_startet_eine_frische_session() {
+        let (mut conn, bus) = connection_with_bus();
+        bus.set_value(1, 0, "0.5");
+        bus.set_reply_delay(Duration::from_millis(400));
+        conn.send_line("1:0?").await.unwrap(); // Antwort wäre bei 400 ms fällig
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        bus.drop_connection();
+        conn.disconnect().await.unwrap();
+        conn.connect().await.unwrap();
+        bus.set_reply_delay(Duration::ZERO);
+
+        // Die alte Antwort darf nicht mehr kommen ...
+        assert_eq!(recv_within(&mut conn, Duration::from_secs(1)).await, None);
+        // ... eine neue Abfrage wird normal beantwortet.
+        conn.send_line("1:0?").await.unwrap();
+        assert_eq!(
+            recv_within(&mut conn, Duration::from_secs(1))
+                .await
+                .as_deref(),
+            Some("#1:0=0.5")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn verbindungsprotokoll_haelt_zeitpunkte_fest() {
+        let (mut conn, bus) = connection_with_bus();
+        let start = Instant::now();
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        bus.drop_connection();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        conn.disconnect().await.unwrap();
+        bus.refuse_connections(true);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let _ = conn.connect().await;
+        bus.refuse_connections(false);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        conn.connect().await.unwrap();
+
+        let log: Vec<(Duration, ConnectionEvent)> = bus
+            .connection_log()
+            .into_iter()
+            .map(|(at, e)| (at - start, e))
+            .collect();
+        assert_eq!(
+            log,
+            vec![
+                (Duration::from_secs(1), ConnectionEvent::Dropped),
+                (Duration::from_secs(2), ConnectionEvent::Disconnect),
+                (
+                    Duration::from_secs(3),
+                    ConnectionEvent::Connect { accepted: false }
+                ),
+                (
+                    Duration::from_secs(5),
+                    ConnectionEvent::Connect { accepted: true }
+                ),
+            ]
+        );
+    }
+
+    /// Wächter gegen hängende Tests: Liest ein Client auf der getrennten
+    /// Verbindung ohne Pause weiter (Dauerschleife wie im Befund zu Spec
+    /// 0008), würde ein Test mit pausierter Uhr sonst ewig hängen, statt
+    /// zu scheitern - die Zeit läuft nie weiter, solange ein Task bereit
+    /// ist.
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "Dauerschleife")]
+    async fn waechter_bricht_dauerlesen_auf_getrennter_verbindung_ab() {
+        let (mut conn, bus) = connection_with_bus();
+        bus.drop_connection();
+        // Schutz gegen Hängen, falls der Wächter fehlt: nach 10 s virtueller
+        // Zeit endet der Test OHNE Panic und scheitert damit.
+        let _ = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let _ = conn.recv_line().await;
+            }
+        })
+        .await;
     }
 }

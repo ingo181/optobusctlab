@@ -18,7 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 mod sim_bus;
-pub use sim_bus::SimBus;
+pub use sim_bus::{ConnectionEvent, IoAttempt, SimBus};
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -124,15 +124,34 @@ impl SimulatedConnection {
 
 #[async_trait]
 impl BoardConnection for SimulatedConnection {
+    /// Mit Bus: Verbindungsaufbau beim Bus (kann abgelehnt werden, startet
+    /// sonst eine frische Session - Spec 0008). Ohne Bus: immer erfolgreich.
     async fn connect(&mut self) -> Result<(), TransportError> {
-        Ok(())
+        match &self.bus {
+            Some(bus) if !bus.try_connect() => Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "SimBus: Verbindung abgelehnt",
+            ))),
+            _ => Ok(()),
+        }
     }
 
     async fn disconnect(&mut self) -> Result<(), TransportError> {
+        if let Some(bus) = &self.bus {
+            bus.on_disconnect();
+        }
         Ok(())
     }
 
     async fn send_line(&mut self, line: &str) -> Result<(), TransportError> {
+        // Getrennte Session: nichts kommt beim Bus an, auch nicht im
+        // Sende-Log - ein späteres "nachträgliches Senden" wäre sichtbar.
+        if let Some(bus) = &self.bus {
+            if bus.is_disconnected() {
+                bus.note_io_while_disconnected(crate::IoAttempt::Send);
+                return Err(TransportError::Disconnected);
+            }
+        }
         self.sent.lock().unwrap().push(line.to_string());
         if let Some(bus) = &self.bus {
             bus.on_line_sent(line);
@@ -146,13 +165,29 @@ impl BoardConnection for SimulatedConnection {
     }
 
     async fn recv_line(&mut self) -> Result<RawLine, TransportError> {
+        // Getrennte Session: sofort und bei JEDEM Aufruf `Disconnected` -
+        // so verhält sich `TcpConnection` nach dem Schließen der Gegenseite
+        // (Charakterisierungstest unten, Befund zu Spec 0008).
+        if let Some(bus) = &self.bus {
+            if bus.is_disconnected() {
+                bus.note_io_while_disconnected(crate::IoAttempt::Recv);
+                return Err(TransportError::Disconnected);
+            }
+        }
         if let Some(line) = self.queued_responses.pop_front() {
             return Ok(line);
         }
         // Mit angeschlossenem Bus: auf dessen nächste fällige Zeile warten
-        // (bleibt ebenfalls pending, solange nichts eingeplant ist).
+        // (bleibt ebenfalls pending, solange nichts eingeplant ist) - oder
+        // auf den Abbruch der Session.
         if let Some(bus) = &self.bus {
-            return Ok(bus.next_incoming().await);
+            return match bus.next_incoming_in_session().await {
+                Some(line) => Ok(line),
+                None => {
+                    bus.note_io_while_disconnected(crate::IoAttempt::Recv);
+                    Err(TransportError::Disconnected)
+                }
+            };
         }
         // WICHTIG: Bei leerer Warteschlange NICHT sofort einen Fehler
         // zurückgeben. Ein "instant Err" würde im Lab-Actor (siehe
@@ -371,6 +406,43 @@ mod tests {
             matches!(result, Err(TransportError::Io(_))),
             "erwartete TransportError::Io, bekam {result:?}"
         );
+    }
+
+    /// Charakterisierung (Befund zu Spec 0008, kein neues Verhalten): Nach
+    /// dem Schließen der Gegenseite liefert `recv_line()` NICHT pending,
+    /// sondern sofort und bei jedem weiteren Aufruf `Disconnected`. Genau
+    /// das ließ den Lab-Actor in eine Dauerschleife laufen. Gezählt werden
+    /// Rückgaben, nicht Zeiten; das `timeout` schützt nur gegen Hängen.
+    #[tokio::test]
+    async fn nach_schliessen_der_gegenseite_liefert_recv_line_wiederholt_disconnected() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            drop(stream); // Gegenseite schließt sofort
+        });
+
+        let mut conn = TcpConnection::new(addr);
+        conn.connect().await.unwrap();
+        peer.await.unwrap();
+
+        let results = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut results = Vec::new();
+            for _ in 0..5 {
+                results.push(conn.recv_line().await);
+            }
+            results
+        })
+        .await
+        .expect("recv_line() blieb hängen statt Disconnected zu liefern");
+
+        assert_eq!(results.len(), 5);
+        for result in &results {
+            assert!(
+                matches!(result, Err(TransportError::Disconnected)),
+                "erwartet Disconnected, kam: {result:?}"
+            );
+        }
     }
 
     #[tokio::test]
