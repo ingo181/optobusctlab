@@ -46,7 +46,14 @@ Backoff, Zustand abfragbar.
 - **Backoff für Wiederverbindungsversuche: Start 1 s, Faktor 2, Maximum
   30 s** (also 1, 2, 4, 8, 16, 30, 30, ... s). Das ist eine **Annahme,
   unverifiziert** - ob 1 s nach dem Schließen am XPort reicht, klärt
-  Messpunkt 1.
+  Messpunkt 1. Der Abstand zählt **ab dem Ende des vorigen Versuchs**
+  (ebenfalls Annahme, unverifiziert).
+- **Zeitlimit pro Verbindungsversuch: 3 s**, für den gesamten Versuch
+  einschließlich des Schließens der alten Session (`disconnect()`) und des
+  Verbindungsaufbaus. Ein Versuch, der länger dauert, gilt als
+  gescheitert. **Annahme, unverifiziert** (gewählt wie das Zeitlimit beim
+  Serverstart); Grund: Gegen einen nicht erreichbaren Host kann ein
+  Verbindungsaufbau sonst sehr lange hängen.
 - Fail-fast beim Start bleibt; Wiederverbindung gilt **nur für Abbrüche im
   laufenden Betrieb**.
 - Der Verbindungszustand wird als **zusätzliches Feld in `GET /api/poll`**
@@ -115,7 +122,38 @@ Scenario: HTTP-Antwort ohne Verbindung
   When POST /api/channel/4/0 eintrifft
   Then ist die Antwort 503, nennt die fehlende Verbindung als Grund
   And enthält keinen Wert
+
+Scenario: Abbruch nach dem Senden, vor dem Rücklesen
+  Given die Verbindung steht und das Polling läuft
+  When die Setz-Sequenz für 4:0 das Setz-Kommando gesendet hat und die Verbindung vor dem Ende des Rücklesens abbricht
+  Then meldet das Ergebnis "Verbindung während des Setzens verloren" und, falls schon eingetroffen, die Quittung
+  And das Ergebnis ist von "keine Verbindung" (nie gesendet) unterscheidbar
+  And nach der Wiederverbindung wird das Setzen NICHT wiederholt
+  And verbindlich für den Ist-Zustand ist die nächste Poll-Antwort für 4:0
+
+Scenario: HTTP-Antwort bei Abbruch während des Setzens
+  Given die Verbindung bricht während einer Setz-Sequenz für 4:0 ab
+  When die Antwort auf POST /api/channel/4/0 kommt
+  Then ist sie 503 mit dem Grund "Verbindung während des Setzens verloren, Zustand unbekannt, nur Rücklesen ist verbindlich"
+  And sie enthält die Quittung, falls eine eingetroffen war, und keinen Wert
 ```
+
+**Zwei Fehlerfälle, bewusst getrennt:**
+
+- **"keine Verbindung"** (Lab: `NotConnected`) heißt ausschließlich: Die
+  Verbindung war schon getrennt, bevor das erste Byte des Setz-Kommandos
+  gesendet wurde. Das Setzen ist sicher nicht bei der Anlage angekommen.
+- **"Verbindung während des Setzens verloren"** (Lab: `ConnectionLost`,
+  mit der Quittung, falls schon eingetroffen) heißt: Der Abbruch kam
+  während des Sendens des Setz-Kommandos, danach, oder vor bzw. während
+  des Rücklesens. Ob die Anlage den Wert übernommen hat, ist unbekannt -
+  der Aufrufer darf NICHT den Eindruck bekommen, das Setzen sei sicher
+  nicht erfolgt (Stellglied-Regel: verbindlich ist nur das Rücklesen).
+  Auch ein Abbruch WÄHREND des Sendens zählt hierzu, weil unklar ist, ob
+  Bytes die Anlage erreicht haben.
+
+In beiden Fällen wird das Setzen nach der Wiederverbindung nicht
+wiederholt.
 
 ### AK4: Wiederverbindung mit Backoff
 
@@ -218,6 +256,13 @@ Neustart des Servers wieder. Befunde siehe Messpunkte.
    ausgeführtes Setzen wäre bei einem Stellglied gefährlich (AK3).
 3. **Felder in `GET /api/poll`:** `connection`
    (`"connected"`/`"disconnected"`) und `reconnect_attempts` (AK6).
+4. **Abbruch mitten in der Setz-Sequenz** (Entscheidung 2026-10-07): eigener
+   Fall `ConnectionLost` (mit der Quittung, falls vorhanden), getrennt von
+   `NotConnected` (nie gesendet). Server: 503 mit `"error": "Verbindung
+   während des Setzens verloren, Zustand unbekannt, nur Rücklesen ist
+   verbindlich"`, Quittung falls vorhanden, `value` null. Keine
+   Wiederholung nach der Wiederverbindung, verbindlich ist der nächste
+   Poll (AK3).
 
 ## Offene Messpunkte für die nächste Laborsession
 
