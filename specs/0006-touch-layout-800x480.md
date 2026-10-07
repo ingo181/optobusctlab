@@ -206,11 +206,37 @@ dieselbe Einzelseite mit Titelzeile, Gauge, DDS-Bedienfeld und Übersicht.
   | AK1a | erfüllt: ohne Fragment ist Gauge aktiv (Rust-Tests grün, Screenshot) |
   | AK2 | erfüllt: Gauge vollständig sichtbar, unterste Inhaltszeile y = 438 (inkl. Kartenschatten), 41 px Rand |
   | AK3 | erfüllt: Kopf, alle 12 Zeilen, "veraltet" und Verifikationshinweis sichtbar, unterste Inhaltszeile y = 448, 31 px Rand; Schrift 15,2 px |
-  | AK4 | per Screenshot erfüllt: Eingabefeld, "Setzen", "noch nichts gesetzt", Beschriftung und der reservierte Bereich (160 x 200 px, gestrichelt) sichtbar, unterste Inhaltszeile y = 259, 220 px frei. **Offen, von Hand:** Hinweistext nach einem Setz-Vorgang (Screenshot kann nicht klicken; Platz ist reichlich vorhanden) |
+  | AK4 | per Screenshot erfüllt: Eingabefeld, "Setzen", "noch nichts gesetzt", Beschriftung und der reservierte Bereich (160 x 200 px, gestrichelt) sichtbar, unterste Inhaltszeile y = 259, 220 px frei. Hinweistext nach einem Setz-Vorgang: per Handtest erfüllt (siehe "AK4 Handtest" unten) |
   | AK5 | erfüllt: alle Touch-Ziele mindestens 44 x 44 px (Tabelle oben) |
   | AK6 | erfüllt (Handtest, siehe oben) |
   | AK7 | erfüllt: bei 1000x1300 alle drei Ansichten vollständig, nichts abgeschnitten |
   | AK8 | offen (Labor) |
+
+- **AK4 Handtest** (2026-10-07, Betreiber Ingo, Desktop-Browser gegen
+  `fake_xport`, Screenshots beim Betreiber). Damit ist AK4 vollständig
+  geprüft:
+  1. Gültiger Wert 2500: bestätigte Frequenz erscheint, ohne Hinweis. OK.
+  2. Hinweistext "keine Antwort vom Modul (Timeout)" (`fake_xport --mute
+     4`): lesbar, keine Überlappung, der reservierte Bereich bleibt frei.
+     OK.
+  3. Ungültige Eingabe "abc": Rahmen des Eingabefelds rot, kein
+     Hinweistext, kein Layoutsprung. OK.
+  4. Langer Wert: **Mangel gefunden** - bei einer langen Ziffernfolge lief
+     "Bestätigt: ... Hz" über den Kartenrand in den reservierten Bereich
+     (eine Ziffernfolge hat keine Umbruchstelle; `fake_xport` klemmt nicht
+     und liest den Wert ungekürzt zurück). **Behoben mit Fix A**
+     (`9c15ff7`, `overflow-wrap: anywhere` für die bestätigte Frequenz und
+     den Hinweistext). Nachweis: statische Seite mit dem echten Stylesheet
+     und dem Markup der DDS-Ansicht bei 800x480 (1e40 lief vorher über,
+     bricht nachher innerhalb der Karte um) und Handtest in der echten App
+     mit 1e40 durch den Betreiber: Umbruch innerhalb der Karte, nichts
+     überlappt. **Bekannte Grenze:** Extreme Werte (z.B. 1e300) machen die
+     Karte höher als 480 px (Scrollen). Eine Formatierung der Anzeige (Fix
+     B) ist zurückgestellt, weil die echte DDS-Firmware auf 999999,8 Hz
+     klemmt (Spec 0003, verifiziert) - solche Werte kommen nur vom
+     Simulator.
+
+  **Stand Spec 0006:** AK1-AK7 geprüft; offen bleibt nur AK8 (Labor).
 
 **Gauge im ausgeblendeten Zustand:** Das Gauge darf nicht mit falscher
 Größe erscheinen, wenn es ausgeblendet gerendert wurde und erst später
