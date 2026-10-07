@@ -498,6 +498,44 @@ esdm lint domain.esdm.yaml
   letzte Version, die damit noch baut. Beim nächsten Bump des Basisimages
   auf rustc ≥1.88 kann der Pin entfallen.
 
+## Diagnose-Werkzeuge am echten XPort
+
+Alle drei öffnen eine eigene XPort-Session - **`octlab-server` vorher
+stoppen** (nur eine Session gleichzeitig, siehe "Verifizierte
+Hardware-Fakten"), nie zwei Werkzeuge parallel.
+
+- `cargo run --example xport_probe -p octlab-transport`: `*:IDN?` und
+  `1:VAL 0?`, Rohzeilen (Spec 0001).
+- `cargo run --example dds_probe -p octlab-transport`: DDS-Frequenz lesen,
+  setzen, zurücklesen, Ausgangswert wiederherstellen (Spec 0003) - das
+  einzige SCHREIBENDE Werkzeug, nur für den verifizierten Kanal 4:0.
+- `cargo run --example lab_probe -p octlab-transport -- ...` (Specs 0005
+  und 0008, **rein lesend**): `query <addr:sub>...` (Rohantwort plus ms je
+  Abfrage), `timing <addr:sub> <n>` (Min/Median/Max), `reconnect <n>`
+  (Wartezeit bis zur neuen Session, Auflösung 100 ms); `--addr HOST:PORT`
+  für andere Ziele, z.B. `fake_xport`. Nimmt nur `<addr>:<sub>` an und
+  lehnt alles andere (insbesondere Setz-Befehle) ab, bevor eine Session
+  geöffnet wird. Ausgabe tabulatorgetrennt fürs Messprotokoll (UTC-Zeit
+  des Sendens, Befehl, Rohantwort, ms). Tests laufen unter `cargo test
+  --workspace` mit (`test = true` in `octlab-transport/Cargo.toml`).
+
+**Verschachtelte Abfragen** (Spec 0005, Messpunkt 12) kann `lab_probe`
+bewusst nicht - `TcpConnection` arbeitet seriell. Dafür Bash, rein
+lesend:
+
+```bash
+exec 3<>/dev/tcp/192.168.1.104/10001
+printf '1:0?\r\n2:10?\r\n' >&3   # 2. Abfrage, bevor die 1. Antwort da ist
+for i in 1 2 3 4; do
+  IFS= read -r -t 1 line <&3 && printf '%s\t%s\n' "$(date -u +%FT%T.%3NZ)" "${line%$'\r'}"
+done
+exec 3>&-                          # Session schließen
+```
+
+Erwartung zum Prüfen: beide Antworten (`#1:0=...`, `#2:10=...`) kommen
+vollständig und eindeutig zuordenbar; Reihenfolge und Zeitabstand
+protokollieren.
+
 ## Build & Test
 
 ```bash
