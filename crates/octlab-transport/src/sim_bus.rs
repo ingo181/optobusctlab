@@ -65,6 +65,10 @@ struct BusState {
     disconnected: bool,
     /// Solange `true`, scheitert `connect()` ("Connection refused").
     refuse_connections: bool,
+    /// Nach einem `disconnect()` des Clients so lange ablehnen (XPort:
+    /// alte Session noch nicht abgebaut).
+    refuse_after_disconnect: Duration,
+    last_client_disconnect: Option<Instant>,
     connection_log: Vec<(Instant, ConnectionEvent)>,
     io_while_disconnected: Vec<(Instant, IoAttempt)>,
     /// Leseversuche seit dem letzten Verbindungswechsel (für den Wächter;
@@ -217,6 +221,14 @@ impl SimBus {
         self.lock().refuse_connections = refuse;
     }
 
+    /// Nach jedem `disconnect()` des Clients werden neue Verbindungen für
+    /// `duration` abgelehnt - nachgebildet nach dem XPort, der eine neue
+    /// Session erst annimmt, wenn die alte abgebaut ist (CLAUDE.md). Für
+    /// `lab_probe reconnect` (Spec 0008, Messpunkt 1).
+    pub fn refuse_after_disconnect(&self, duration: Duration) {
+        self.lock().refuse_after_disconnect = duration;
+    }
+
     /// Alle Verbindungsereignisse mit Zeitpunkt.
     pub fn connection_log(&self) -> Vec<(Instant, ConnectionEvent)> {
         self.lock().connection_log.clone()
@@ -232,7 +244,11 @@ impl SimBus {
     /// `connect()` des Clients: `true` = angenommen, frische Session.
     pub(crate) fn try_connect(&self) -> bool {
         let mut state = self.lock();
-        let accepted = !state.refuse_connections;
+        let now = Instant::now();
+        let still_closing = state
+            .last_client_disconnect
+            .is_some_and(|at| now < at + state.refuse_after_disconnect);
+        let accepted = !state.refuse_connections && !still_closing;
         if accepted {
             state.disconnected = false;
             state.incoming.clear();
@@ -250,6 +266,7 @@ impl SimBus {
         state.disconnected = true;
         state.incoming.clear();
         state.reads_since_change = 0;
+        state.last_client_disconnect = Some(Instant::now());
         state
             .connection_log
             .push((Instant::now(), ConnectionEvent::Disconnect));
@@ -768,5 +785,23 @@ mod tests {
             }
         })
         .await;
+    }
+
+    /// Wie am XPort beobachtet (CLAUDE.md): Direkt nach dem Schließen einer
+    /// Session wird eine neue abgelehnt, bis die alte abgebaut ist.
+    #[tokio::test(start_paused = true)]
+    async fn nach_disconnect_werden_verbindungen_eine_weile_abgelehnt() {
+        let (mut conn, bus) = connection_with_bus();
+        bus.refuse_after_disconnect(Duration::from_millis(350));
+        conn.connect().await.unwrap();
+        conn.disconnect().await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            conn.connect().await.is_err(),
+            "nach 300 ms schon angenommen"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        conn.connect().await.unwrap();
     }
 }
