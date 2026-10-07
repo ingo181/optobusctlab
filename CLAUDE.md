@@ -75,11 +75,14 @@ apps/
                      "Nächste Schritte" - zeigt nur das Architektur-Muster
                      (Server-Embedding + WebView), keine eigene UI.
   web/              Crate `octlab-web`: Leptos 0.8 CSR (WASM), gebaut mit
-                     Trunk (siehe "Frontend-Dev-Workflow" unten). Hält die
-                     per /ws gepushten Messwerte in einem RwSignal (letzter
-                     Wert pro Kanal gewinnt) und zeigt ein selbstgebautes
-                     SVG-Zeigerinstrument für DIV (Adresse 1, Subkanal 0)
-                     plus ein Bedienfeld für die DDS-Frequenz (Adresse 4,
+                     Trunk (siehe "Frontend-Dev-Workflow" unten). Drei
+                     Ansichten als Tabs (Spec `specs/0006-touch-layout-800x480.md`,
+                     Ziel 800x480 ohne Scrollen, Touch-Ziele >= 44 px):
+                     "Gauge" (Start-Tab), "Übersicht", "DDS-Steuerung".
+                     Hält die per /ws gepushten Messwerte in einem RwSignal
+                     (letzter Wert pro Kanal gewinnt) und zeigt ein
+                     selbstgebautes SVG-Zeigerinstrument für DIV (Adresse 1,
+                     Subkanal 0) plus ein Bedienfeld für die DDS-Frequenz (Adresse 4,
                      Subkanal 0; Setzen via `POST /api/channel/{addr}/{sub}`,
                      zeigt NUR die zurückgelesene Frequenz, nie den
                      Wunschwert - Spec `specs/0003-dds-frequenz-setzen.md`)
@@ -135,9 +138,25 @@ Toolchain auf dem Host: `trunk` (0.21.x) + Rust-Target
 host-testbar), nur der WASM-Build selbst läuft auf dem Host. Leptos ist auf
 0.8 gepinnt (0.9 nur alpha); Erfahrungswerte aus dem opnCAQ-Projekt:
 `LocalResource` statt `Resource::new` für WASM-Futures, Thaw NICHT
-verwenden (0.4.x inkompatibel mit Leptos 0.8), Tailwind 4 als gesetzte
-Styling-Wahl sobald die UI über ein einzelnes Instrument hinauswächst
-(bis dahin handgeschriebenes `styles.css`, YAGNI).
+verwenden (0.4.x inkompatibel mit Leptos 0.8). Styling: weiterhin
+handgeschriebenes `apps/web/styles.css` (eine Datei, Stand Spec 0006
+Schritt 4: 271 Zeilen, 38 Regelblöcke). Tailwind 4 war als Styling-Wahl
+vorgemerkt, "sobald die UI über ein einzelnes Instrument hinauswächst" -
+das ist seit Spec 0005 der Fall, wurde aber bewusst NICHT mit Spec 0006
+eingeführt (Entscheidung 2026-10-07); Bewertung später und getrennt.
+
+**Screenshots ohne Browser-Bedienung: `tools/screenshot/shot.sh`**
+(Details: `tools/screenshot/README.md`). Baut und startet `fake_xport`
+(optional `--mute <addr>`), `octlab-server --connection tcp` und einen
+Python-Hilfsserver (nur Standardbibliothek), fotografiert das Frontend mit
+Headless-Firefox in fester Größe (`--size 800x480`) und optional in einem
+bestimmten Tab (`--tab gauge|uebersicht|dds`, setzt das URL-Fragment).
+Ausgabe nach `target/screenshots/` (gitignored). Beendet NUR die selbst
+gestarteten Prozesse über ihre gemerkten PIDs (nie `pkill -f`). Warum
+eine Hilfsseite: `firefox --screenshot` löst beim `load`-Ereignis aus,
+bevor die WASM-App gemountet ist - die Hilfsseite verzögert `load` über
+ein absichtlich spät ausgeliefertes Bild. Prüft nichts automatisch, die
+Bewertung erfolgt durch Ansehen bzw. Ausmessen des PNG.
 
 ## Wichtige Design-Entscheidungen (bitte nicht versehentlich rückgängig machen)
 
@@ -164,6 +183,19 @@ Styling-Wahl sobald die UI über ein einzelnes Instrument hinauswächst
   Die Antwort-Zuordnung läuft über den Kanal, auf den der Actor gerade
   wartet; jede andere gültige Zeile ist unaufgefordert (wird geloggt, an
   `subscribe()` verteilt, ändert aber keinen Kanalzustand).
+- **Frontend-Tabs: alle Ansichten bleiben gemountet, Zustand liegt in
+  `App`** (Spec 0006). Ein Tab-Wechsel blendet nur über das
+  `hidden`-Attribut aus und ein (CSS: `[hidden] { display: none
+  !important }`, damit keine eigene `display`-Regel das aushebelt). Es
+  gibt genau EINE WebSocket-Verbindung auf App-Ebene; der Zustand des
+  DDS-Bedienfelds liegt als `FrequencyState` (Bündel aus `RwSignal`s) in
+  `App`, nicht in der Komponente. Die Tab-Auswahl kommt aus dem
+  URL-Fragment (`#gauge`, `#uebersicht`, `#dds`), wird NUR beim Laden
+  gelesen und von Klicks nicht geschrieben; unbekannt oder fehlend →
+  Gauge (`apps/web/src/tabs.rs`, Host-Tests). Damit kann
+  `tools/screenshot/` jeden Tab ohne Klick ansteuern. Der aktive Tab ist
+  bewusst NICHT fett (breitere Beschriftung würde die Nachbar-Tabs bei
+  jedem Wechsel verschieben).
 - **`/ws`-Vertrag (Spec 0005):** beim Verbinden ein Snapshot aller schon
   abgefragten Kanäle der Kanalliste, danach NUR Änderungen von Wert oder
   Veraltet-Markierung. Format aus Spec 0002 (`address`, `subchannel`,
@@ -611,6 +643,14 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
     Offen: die Messpunkte am Ende der Spec (Kanalbelegung, Einheiten,
     Antwortzeiten am echten Gerät - bis dahin ist außer DDS 4:0 alles
     UNVERIFIZIERT) und AK12.
+11. **Touch-Layout 800x480 - IN ARBEIT** (Spec 0006, Status "In Arbeit"
+    bis AK8, Touch-Bedienung am echten Pi im Labor). Umgesetzt und grün:
+    Tab-Leiste (52 px, Tabs 44 px hoch), drei Ansichten ohne Scrollen bei
+    800x480, Touch-Ziele >= 44 px, im gerenderten Screenshot nachgemessen
+    (Zahlen im Spec-Nachweis); Handtest AK6 (Zustand bleibt beim
+    Tab-Wechsel erhalten) bestanden. Als Nächstes vorgemerkt: Spec 0007,
+    eigenes Ziffernfeld in der DDS-Ansicht (Platz von 160 x 200 px ist
+    reserviert), damit am Kiosk keine System-Bildschirmtastatur nötig ist.
 
 ## Backlog (kein aktiver Schritt, nur vorgemerkt)
 
