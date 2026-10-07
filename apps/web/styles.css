@@ -213,12 +213,17 @@ figcaption {
   margin: 0.5rem 0 0;
   font-family: ui-monospace, monospace;
   font-size: 1.2rem;
+  /* Eine Ziffernfolge ist ein einziges "Wort" ohne Umbruchstelle - ohne
+     diese Regel läuft z.B. ein vom Simulator ungeklemmt zurückgelesener
+     Wert wie 1e20 über die Karte hinaus (Spec 0006, AK4-Handtest). */
+  overflow-wrap: anywhere;
 }
 
 .frequency-notice {
   margin: 0.25rem 0 0;
   font-size: 0.9rem;
   color: #c62828;
+  overflow-wrap: anywhere;
 }
 
 .frequency-caption {
