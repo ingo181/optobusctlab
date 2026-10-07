@@ -233,6 +233,52 @@ Kanäle als veraltet, `GET /api/poll` meldet "getrennt" mit steigender
 Versuchszahl, und nach Wiederkehr des XPort laufen die Werte ohne
 Neustart des Servers wieder. Befunde siehe Messpunkte.
 
+## Nachweis (Stand 2026-10-07)
+
+Prüfart: **Cucumber** = `crates/octlab-lab/tests/polling_features/connection_loss.feature`
+(Polling-Runner, pausierte Uhr, Module über `SimBus` mit Abbruch und
+Wiederverbindung); **Server** = `crates/octlab-server/tests/connection_loss_api.rs`
+(pausierte Uhr, `SimBus`); **Host** = Rust-Tests in `apps/web`;
+**Screenshot** = `tools/screenshot/shot.sh` (800x480);
+**von Hand** = Betreiber/Labor. Alle automatischen Tests waren gegen eine
+leere Hülle bzw. den vorläufigen Stand rot und sind grün (`d42b274`,
+`403d73f`, `6c4a2e6`, `19e7322`).
+
+| AK | Prüfart | Stand |
+|----|---------|-------|
+| AK1 keine Dauerschleife | Cucumber (höchstens ein Leseversuch auf der getrennten Verbindung - gezählt, nicht nur Zeitpunkte, weil mit pausierter Uhr eine Dauerschleife im selben Zeitpunkt abläuft) | erfüllt |
+| AK2 Kanäle veraltet, Werte bleiben | Cucumber (Kanalzustand und Änderungsstrom); Screenshot: Übersicht im getrennten Zustand zeigt alle 12 Kanäle "veraltet" mit letzten Werten | erfüllt |
+| AK3 Setzen ohne Verbindung / Abbruch mitten im Setzen | Cucumber (sofort "keine Verbindung", über das `SimBus`-Sende-Log nie nachgesendet; Abbruch vor bzw. nach der Quittung -> `ConnectionLost` ohne bzw. mit Quittung, genau einmal gesendet); Server (503 mit beiden Texten, Quittung falls vorhanden, ohne Wert); Host (DDS-Bedienfeld zeigt den Hinweis, leitet keine bestätigte Frequenz ab) | erfüllt |
+| AK4 Backoff | Cucumber (Versuche bei 1, 3, 7, 15, 31, 61, 91 s nach dem Abbruch; vor jedem Versuch ist die vorige Session geschlossen) | erfüllt im Simulator; Werte sind Annahmen (Messpunkt 1) |
+| AK5 Wiederaufnahme | Cucumber (Polling läuft weiter, "veraltet" verschwindet; nach erneutem Abbruch wieder 1 s) | erfüllt |
+| AK6 Zustand in `GET /api/poll` | Cucumber (Lab-Statistik); Server (`connection`, `reconnect_attempts`, bisherige Felder unverändert) | erfüllt |
+| AK7 Anzeige im Frontend | Host (Anzeige nur bei `"disconnected"`; Server nicht erreichbar, Fehlerstatus oder unlesbare Antwort -> keine Anzeige); Screenshot 800x480 je Tab verbunden und getrennt (`--fake-exit-after-s 2`): "keine Verbindung zur Anlage" rechts in der Tab-Leiste, Tabs unverändert 81/104/148 x 44 px, Eingabefeld 266 x 44, "Setzen" 92 x 44, nichts abgeschnitten (unterste Inhaltszeile y = 438 / 448 / 259 wie ohne Anzeige) | erfüllt |
+| AK8 Fail-fast beim Start | Cucumber (Start scheitert, genau ein Verbindungsversuch) | erfüllt (war schon vorher so, Charakterisierung) |
+| AK9 Live-Beweis am echten XPort | von Hand im Labor | **offen** |
+
+**Gegenproben** (eingebauter Fehler, danach zurückgebaut) - alle erkannt:
+Fehler ohne Abbruch, Warteschlange über Wiederverbindung erhalten
+(`SimBus`); Dauerschleife wie bisher, keine Veraltet-Markierung, Aufträge
+nach Wiederverbindung nachsenden (erkannt über das Sende-Log, die Antwort
+an den Aufrufer war dabei korrekt), fester Backoff, kein `disconnect()`
+vor `connect()`, Backoff bzw. Versuchszähler nach Erfolg nicht
+zurückgesetzt, Abbruch mitten im Setzen als `NotConnected` gemeldet
+(Lab); 503 durch 504 ersetzt, `ConnectionLost` als `NotConnected`
+gemeldet, Feldwerte vertauscht (Server); nicht erreichbarer Server als
+Anlagen-Verlust angezeigt, Quittung "OK" ohne Rücklesewert als bestätigt
+übernommen (Frontend).
+
+**Live-Kontrolle gegen `fake_xport`** (nicht am echten XPort): Mit
+`fake_xport --exit-after-s 3` beendete sich der Simulator nach 3 s, Port
+frei; die Server-CPU lag danach bei 0 Ticks in 3 s (vor der Umsetzung:
+304 Ticks in 3 s, rund 100 % eines Kerns); `GET /api/poll` meldete
+`"disconnected"` mit 2, dann 3 Versuchen; `POST /api/channel/4/0` lieferte
+503 "keine Verbindung zur Anlage"; im Log genau eine Warnung "Verbindung
+verloren".
+
+**Offen bis zur Laborsession:** AK9 und die Messpunkte 1-3 unten. Bis
+dahin bleiben die Backoff-Werte und das 3-s-Zeitlimit Annahmen.
+
 ## Explizit außerhalb des Scopes
 
 - **`/ws`-Wiederverbindung im Frontend** nach einem Server-Neustart -
