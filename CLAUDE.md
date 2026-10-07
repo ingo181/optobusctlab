@@ -116,7 +116,10 @@ Zwei Betriebsarten, beide gegen denselben `octlab-server`:
   Gauge-Skala; Setz-Kommandos `<a>:<s>=<v>!` quittiert er mit
   `#<a>:255=0 [OK]` und übernimmt den Wert fürs Rücklesen, ohne Klemmung
   oder Rundung der echten Firmware; `--mute <addr>` schaltet ein Modul
-  stumm; Lausch-Adresse als Argument, Default `127.0.0.1:15001`).
+  stumm; `--exit-after-s <n>` beendet den Simulator n s nach dem Start,
+  schließt die Session und gibt den Port frei - ein verbundener Server
+  erlebt so einen echten Verbindungsabbruch (Spec 0008); Lausch-Adresse als
+  Argument, Default `127.0.0.1:15001`).
   Server dagegen mit `--connection tcp --addr
   127.0.0.1:15001` - damit läuft der komplette echte Stack (TcpConnection →
   Protokoll → Lab-Actor → WebSocket → Frontend), nur die Hardware ist
@@ -167,7 +170,15 @@ Bewertung erfolgt durch Ansehen bzw. Ausmessen des PNG.
 - **`SimulatedConnection::recv_line()` darf bei leerer Queue NIEMALS sofort
   einen Err zurückgeben**, sondern muss pending bleiben (`std::future::pending`).
   Sonst busy-loopt der Lab-Actor (`tokio::select!` sieht den Zweig ständig als
-  ready). War schon einmal ein Bug, siehe Git-History.
+  ready). War schon einmal ein Bug, siehe Git-History. Gilt für den
+  VERBUNDENEN Zustand: Mit `SimBus` und nach `drop_connection()` liefert
+  `recv_line()` dagegen bewusst sofort und bei jedem Aufruf
+  `Disconnected` - genau so verhält sich `TcpConnection` nach dem
+  Schließen der Gegenseite (Charakterisierungstest), und der Lab-Actor
+  muss damit umgehen (Spec 0008, siehe "Verbindungsverlust" unten).
+  `SimBus` bricht ab 10 000 Leseversuchen auf getrennter Verbindung mit
+  "Dauerschleife" ab, damit so ein Rückfall einen Test mit pausierter Uhr
+  scheitern statt hängen lässt.
 - **Ein Actor pro Verbindung** (`Lab::spawn`), der die Connection exklusiv
   besitzt. Kein Mutex um die Connection selbst – das bildet die reale
   Hardware-Topologie ab (ein geteilter OptoBus).
@@ -196,6 +207,32 @@ Bewertung erfolgt durch Ansehen bzw. Ausmessen des PNG.
   `tools/screenshot/` jeden Tab ohne Klick ansteuern. Der aktive Tab ist
   bewusst NICHT fett (breitere Beschriftung würde die Nachbar-Tabs bei
   jedem Wechsel verschieben).
+- **Verbindungsverlust im Betrieb (Spec 0008):** Ein `Disconnected`- oder
+  I/O-Fehler beim Lesen oder Senden versetzt den Lab-Actor in den Zustand
+  "getrennt": alte Session schließen, alle Kanäle der Kanalliste
+  "veraltet" (Werte bleiben), laufenden Poll-Zyklus verwerfen, auf der
+  toten Verbindung NICHT mehr lesen oder senden (vorher: Dauerschleife mit
+  ~100 % CPU). Wiederverbindung: `disconnect()` dann `connect()`, ganzer
+  Versuch höchstens 3 s; Backoff 1 s, ×2, höchstens 30 s, gezählt ab dem
+  Ende des vorigen Versuchs - ALLES ANNAHMEN, UNVERIFIZIERT
+  (`RECONNECT_*`-Konstanten, Messpunkte in Spec 0008). Fail-fast beim
+  Start bleibt (`Lab::spawn` verbindet einmal, keine Wiederverbindung).
+  **Aufträge während der Trennung werden sofort beantwortet und NIE
+  nachgesendet** (ein verspätetes Setzen wäre bei einem Stellglied
+  gefährlich). Zwei Fehlerfälle, bewusst getrennt:
+  `SetReadBackError::NotConnected` (bzw. `SetOutcome::NotConnected`) heißt
+  ausschließlich "nie gesendet"; `SetReadBackError::ConnectionLost { ack }`
+  (bzw. `SetOutcome::ConnectionLost`) heißt Abbruch beim Senden, danach
+  oder vor/während des Rücklesens - Zustand unbekannt, verbindlich ist der
+  nächste Poll. HTTP: `POST /api/channel/...` antwortet in beiden Fällen
+  503 ohne Wert (`"keine Verbindung zur Anlage"` bzw. `"Verbindung während
+  des Setzens verloren, Zustand unbekannt, nur Rücklesen ist verbindlich"`
+  mit Quittung, falls vorhanden); 504 bleibt "keine Quittung/Antwort".
+  `GET /api/poll` hat zusätzlich `connection` (`"connected"`/
+  `"disconnected"`) und `reconnect_attempts`. Das Frontend fragt
+  `/api/poll` alle 2 s ab und zeigt rechts in der Tab-Leiste "keine
+  Verbindung zur Anlage" - aber NUR, wenn der Server das meldet; ist der
+  Server selbst nicht erreichbar, bleibt die Anzeige aus (Spec 0009).
 - **`/ws`-Vertrag (Spec 0005):** beim Verbinden ein Snapshot aller schon
   abgefragten Kanäle der Kanalliste, danach NUR Änderungen von Wert oder
   Veraltet-Markierung. Format aus Spec 0002 (`address`, `subchannel`,
@@ -469,7 +506,7 @@ cargo test -p octlab-lab         # schneller Kernel-Test während der Entwicklun
 cargo run -p octlab-server       # startet auf :3000, läuft OHNE Hardware (SimulatedConnection)
 curl localhost:3000/health
 curl localhost:3000/api/channels # Kanalliste (Spec 0005)
-curl localhost:3000/api/poll     # Poll-Statistik: Intervall, letzte Zykluszeit, Überläufe
+curl localhost:3000/api/poll     # Poll-Statistik + Verbindungszustand (connection, reconnect_attempts)
 ```
 
 Das Polling über die Kanalliste läuft auf JEDER Verbindungsart, auch in
@@ -647,10 +684,22 @@ Commit, der "eigentlich" etwas anderes bringen sollte.
     bis AK8, Touch-Bedienung am echten Pi im Labor). Umgesetzt und grün:
     Tab-Leiste (52 px, Tabs 44 px hoch), drei Ansichten ohne Scrollen bei
     800x480, Touch-Ziele >= 44 px, im gerenderten Screenshot nachgemessen
-    (Zahlen im Spec-Nachweis); Handtest AK6 (Zustand bleibt beim
-    Tab-Wechsel erhalten) bestanden. Als Nächstes vorgemerkt: Spec 0007,
+    (Zahlen im Spec-Nachweis); Handtests AK4 und AK6 bestanden, AK1-AK7
+    erfüllt, offen nur AK8 (Labor). Als Nächstes vorgemerkt: Spec 0007,
     eigenes Ziffernfeld in der DDS-Ansicht (Platz von 160 x 200 px ist
     reserviert), damit am Kiosk keine System-Bildschirmtastatur nötig ist.
+12. **Verbindungsverlust zum XPort - IN ARBEIT** (Spec 0008, Status "In
+    Arbeit" bis AK9, Live-Beweis am echten XPort, und den Messpunkten).
+    Umgesetzt und grün: `SimBus` simuliert Abbruch/Wiederverbindung,
+    Lab-Actor mit Zustand "getrennt" und Backoff, Server mit 503 und
+    Verbindungsfeldern in `/api/poll`, Frontend-Anzeige in der Tab-Leiste,
+    `fake_xport --exit-after-s` (Details siehe Design-Entscheidung
+    "Verbindungsverlust im Betrieb"). Live gegen `fake_xport` geprüft:
+    Server-CPU nach dem Abbruch 0 Ticks in 3 s (vorher ~100 % eines Kerns).
+    Offen: Messpunkte (Wartezeit des XPort bis zur neuen Session, was beim
+    Kabelziehen ankommt, XPort-Neustart) und AK9. Vorgemerkt: Spec 0009
+    (`/ws`-Wiederverbindung im Frontend) und die Überlauf-Zählung bei
+    dauerhaft stummen Modulen (Änderung an Spec 0005 AK10).
 
 ## Backlog (kein aktiver Schritt, nur vorgemerkt)
 
