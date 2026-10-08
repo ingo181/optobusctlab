@@ -536,6 +536,36 @@ Erwartung zum Prüfen: beide Antworten (`#1:0=...`, `#2:10=...`) kommen
 vollständig und eindeutig zuordenbar; Reihenfolge und Zeitabstand
 protokollieren.
 
+**Session beobachten bei Kabelziehen / XPort-Neustart** (Spec 0008,
+Messpunkte 2 und 3; Laborcheckliste 3.2/3.3). `octlab-server` vorher
+stoppen. Hält eine Session offen, protokolliert jedes Lesen mit
+Zeitstempel und unterscheidet Daten, Timeout (5 s ohne Zeile), EOF
+(Gegenseite hat geschlossen) und Fehler (z.B. "Connection reset by
+peer"). Nach jedem Timeout eine lesende Abfrage `1:0?`, damit Verkehr da
+ist - eine Folge von Timeouts trotz Abfragen deutet auf stilles Hängen.
+Abbruch mit Strg+C, danach `exec 3>&-`.
+
+```bash
+exec 3<>/dev/tcp/192.168.1.104/10001
+err=$(mktemp)
+log() { printf '%s\t%s\n' "$(date -u +%FT%T.%3NZ)" "$*"; }
+printf '1:0?\r\n' >&3
+while true; do
+  IFS= read -r -t 5 line <&3 2>"$err"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    log "Daten: ${line%$'\r'}"
+  elif [ "$rc" -gt 128 ]; then
+    log "Timeout (5 s ohne Zeile)"
+    printf '1:0?\r\n' >&3 2>"$err" || { log "Sendefehler: $(cat "$err")"; break; }
+  elif [ -s "$err" ]; then
+    log "Fehler (rc=$rc): $(cat "$err")"; break
+  else
+    log "EOF (rc=$rc), Gegenseite hat geschlossen${line:+; Rest: $line}"; break
+  fi
+done
+exec 3>&-; rm -f "$err"
+```
+
 ## Build & Test
 
 ```bash
